@@ -19,3 +19,4 @@ dependencyResolutionManagement {
 include(":proxy")
 include(":cli")
 include(":sniffer")
+include(":mock-client")
