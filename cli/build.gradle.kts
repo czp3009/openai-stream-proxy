@@ -24,8 +24,5 @@ kotlin {
         nativeMain.dependencies {
             implementation(libs.ktor.client.curl)
         }
-        mingwX64Main.dependencies {
-            implementation(libs.ktor.client.winhttp)
-        }
     }
 }

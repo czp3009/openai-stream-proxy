@@ -14,6 +14,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 No test suites exist yet.
 
+## Running for Testing
+
+Since sniffer and proxy are long-running reverse proxy processes, prefer running them via **IDEA run configurations**
+rather than terminal commands. This ensures the process is trackable and can be easily stopped through IDEA's Run tool
+window.
+
 ## Project Architecture
 
 Kotlin Multiplatform (KMP) project using Gradle with version catalog (`gradle/libs.versions.toml`). Targets: JVM,

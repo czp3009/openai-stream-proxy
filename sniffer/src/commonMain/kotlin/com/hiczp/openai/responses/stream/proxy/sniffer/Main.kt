@@ -13,13 +13,13 @@ fun main() {
     // No explicit engine — Ktor auto-discovers from classpath dependencies
     val client = HttpClient {
         install(HttpTimeout) {
-            requestTimeoutMillis = 0
+            requestTimeoutMillis = Long.MAX_VALUE
             connectTimeoutMillis = 30_000
-            socketTimeoutMillis = 0
+            socketTimeoutMillis = Long.MAX_VALUE
         }
         followRedirects = false
     }
-    val proxy = ReverseProxy(client, config.upstreamUrl)
+    val proxy = ReverseProxy(client, config.upstreamBaseUrl)
 
     embeddedServer(CIO, port = config.port, host = "0.0.0.0") {
         routing {

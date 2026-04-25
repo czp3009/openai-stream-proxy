@@ -1,13 +1,28 @@
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
 }
 
 kotlin {
-    jvm()
+    jvm {
+        @OptIn(org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi::class)
+        binaries {
+            executable {
+                mainClass.set("com.hiczp.openai.responses.stream.proxy.sniffer.MainKt")
+            }
+        }
+    }
     mingwX64()
     linuxX64()
     linuxArm64()
     macosArm64()
+
+    targets.withType<KotlinNativeTarget> {
+        binaries.executable {
+            entryPoint = "com.hiczp.openai.responses.stream.proxy.sniffer.main"
+        }
+    }
 
     sourceSets {
         commonMain.dependencies {
@@ -21,6 +36,7 @@ kotlin {
         }
         jvmMain.dependencies {
             implementation(libs.ktor.client.cio)
+            implementation(libs.logback.classic)
         }
         nativeMain.dependencies {
             implementation(libs.ktor.client.curl)

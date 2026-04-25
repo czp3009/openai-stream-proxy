@@ -10,7 +10,6 @@ import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.utils.io.*
-import io.ktor.util.*
 
 private val logger = KotlinLogging.logger {}
 
@@ -18,12 +17,12 @@ private val logger = KotlinLogging.logger {}
 // without buffering bodies in memory.
 class ReverseProxy(
     private val client: HttpClient,
-    private val upstreamUrl: String,
+    private val upstreamBaseUrl: String,
 ) {
     @OptIn(InternalAPI::class)
     suspend fun forward(call: ApplicationCall) {
         val request = call.request
-        val targetUrl = upstreamUrl.trimEnd('/') + request.uri
+        val targetUrl = upstreamBaseUrl.trimEnd('/') + request.uri
 
         TrafficLogger.logRequest(request.httpMethod, request.uri, request.headers)
 
@@ -113,8 +112,8 @@ class ReverseProxy(
 
     // Determine if the content type is human-readable text.
     private val ContentType?.isText: Boolean
-        get() = this?.let { ct ->
-            ct.match(ContentType.Text.Any) ||
-                ct.match(ContentType("text", "event-stream"))
+        get() = this?.let { contentType ->
+            contentType.match(ContentType.Text.Any) ||
+                    contentType.match(ContentType("text", "event-stream"))
         } ?: false
 }
