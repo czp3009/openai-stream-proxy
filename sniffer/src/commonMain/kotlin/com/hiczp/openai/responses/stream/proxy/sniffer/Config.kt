@@ -15,8 +15,8 @@ data class Config(
         private const val DEFAULT_PORT = 8080
 
         fun fromEnvironment(): Config {
-            val upstreamBaseUrl = environment(ENV_UPSTREAM_BASE_URL) ?: DEFAULT_UPSTREAM_BASE_URL
-            val port = environment(ENV_LISTEN_PORT)?.toIntOrNull() ?: DEFAULT_PORT
+            val upstreamBaseUrl = System.getenv(ENV_UPSTREAM_BASE_URL) ?: DEFAULT_UPSTREAM_BASE_URL
+            val port = System.getenv(ENV_LISTEN_PORT)?.toIntOrNull() ?: DEFAULT_PORT
             return Config(upstreamBaseUrl = upstreamBaseUrl, port = port)
         }
     }

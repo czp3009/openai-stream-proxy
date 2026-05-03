@@ -8,8 +8,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./gradlew build              # Build all subprojects
 ./gradlew :sniffer:run       # Run sniffer on JVM
 ./gradlew :mock-client:run   # Run mock-client on JVM
-./gradlew :sniffer:mingwX64Run   # Run sniffer as native binary (Windows)
-./gradlew :sniffer:linuxX64Run   # Run sniffer as native binary (Linux)
 ```
 
 No test suites exist yet.
@@ -22,8 +20,8 @@ window.
 
 ## Project Architecture
 
-Kotlin Multiplatform (KMP) project using Gradle with version catalog (`gradle/libs.versions.toml`). Targets: JVM,
-mingwX64, linuxX64, linuxArm64, macosArm64. Kotlin 2.3.21, Ktor 3.4.3.
+Kotlin Multiplatform (KMP) project using Gradle with version catalog (`gradle/libs.versions.toml`). Kotlin 2.3.21, Ktor
+3.4.3.
 
 ### Subprojects
 
@@ -38,10 +36,10 @@ mingwX64, linuxX64, linuxArm64, macosArm64. Kotlin 2.3.21, Ktor 3.4.3.
 
 #### Auxiliary (not part of the core project)
 
-- **sniffer** — Development tool for analyzing OpenAI API traffic. A reverse proxy that intercepts and logs request/
+- **sniffer** — Development tool for analyzing OpenAI API traffic (JVM-only). A reverse proxy that intercepts and logs
+  request/
   response headers and bodies to stdout via `TrafficLogger`. The collected data informs proxy development. Uses Ktor CIO
-  server. Consumes `:proxy`. Has `expect/actual` for `environment()` (JVM: `System.getenv`, native: `posix.getenv`).
-  Configured via env vars `UPSTREAM_BASE_URL` and `LISTEN_PORT`.
+  server. Configured via env vars `UPSTREAM_BASE_URL` and `LISTEN_PORT`.
 - **mock-client** — Development tool for programmatic data collection and testing. A client using the official
   `openai-java` SDK (JVM-only). Works with sniffer to collect traffic data programmatically, or tests proxy
   programmatically. Requires API key (env var `OPENAI_API_KEY`). Run via IDEA run configuration (env vars already set
@@ -49,8 +47,11 @@ mingwX64, linuxX64, linuxArm64, macosArm64. Kotlin 2.3.21, Ktor 3.4.3.
 
 ### Key Patterns
 
-- Platform-specific HTTP engines are wired in `sourceSets`: JVM uses `ktor-client-cio`, native uses `ktor-client-curl`.
-- Native entry points use `entryPoint = "com.hiczp.openai.responses.stream.proxy.sniffer.main"` on all
-  `KotlinNativeTarget` targets. JVM uses `mainClass.set(...)` via the `binaries.executable` block.
-- Configuration is read from environment variables through an `expect/actual` function to support both JVM and native
-  platforms.
+- Platform-specific HTTP engines: `cli` uses `jvmMain`/`nativeMain` source sets to wire JVM (`ktor-client-cio`) vs
+  native (`ktor-client-curl`) engines. `proxy` is engine-agnostic (depends only on `ktor-client-core`; consumers provide
+  the engine). `sniffer` and `mock-client` are JVM-only.
+- `proxy` and `cli` target JVM, mingwX64, linuxX64, linuxArm64, macosArm64. `sniffer` and `mock-client` target JVM only.
+- `sniffer` and `mock-client` are JVM executables with all code in `commonMain` and `mainClass.set(...)` in the `jvm`
+  block. `proxy` is a library (no `binaries.executable`). `cli` is not yet implemented as an executable.
+- Configuration is read from environment variables — `sniffer`/`mock-client` use `System.getenv` directly. `proxy`/`cli`
+  will use `expect/actual` for cross-platform access once implemented.

@@ -29,7 +29,7 @@ class ReverseProxy(
         // Tee the request body: log while forwarding to upstream
         val requestBody = streamRequestBody(request.headers, call.request.receiveChannel())
 
-        val upstreamResponse = client.request(targetUrl) {
+        client.prepareRequest(targetUrl) {
             method = request.httpMethod
             headers {
                 request.headers.forEach { name, values ->
@@ -38,11 +38,10 @@ class ReverseProxy(
                 }
             }
             body = requestBody
+        }.execute { upstreamResponse ->
+            TrafficLogger.logResponse(upstreamResponse.status, upstreamResponse.headers)
+            respondWithBody(call, upstreamResponse)
         }
-
-        TrafficLogger.logResponse(upstreamResponse.status, upstreamResponse.headers)
-
-        respondWithBody(call, upstreamResponse)
     }
 
     // Wrap the incoming channel as OutgoingContent, logging each chunk before forwarding.
