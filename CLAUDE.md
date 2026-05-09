@@ -1,57 +1,68 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working in this repository.
 
 ## Build Commands
 
 ```bash
-./gradlew build              # Build all subprojects
-./gradlew :sniffer:run       # Run sniffer on JVM
-./gradlew :mock-client:run   # Run mock-client on JVM
+./gradlew build
+./gradlew :sniffer:run
+./gradlew :mock-client:run
 ```
 
 No test suites exist yet.
 
 ## Running for Testing
 
-Since sniffer and proxy are long-running reverse proxy processes, prefer running them via **IDEA run configurations**
-rather than terminal commands. This ensures the process is trackable and can be easily stopped through IDEA's Run tool
-window.
+Since `sniffer` and the future proxy/CLI are long-running reverse proxy processes, prefer running them via IDEA run
+configurations rather than in the terminal. This keeps the process easy to stop and inspect.
 
 ## Project Architecture
 
-Kotlin Multiplatform (KMP) project using Gradle with version catalog (`gradle/libs.versions.toml`). Kotlin 2.3.21, Ktor
-3.4.3.
+Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Ktor `3.4.3`.
+
+## Current Status
+
+The repository is still in an early skeleton state:
+
+- `proxy` currently only exposes a placeholder `hello()` function.
+- `cli` currently only has a placeholder `main()` and does not start an HTTP server.
+- `sniffer` and `mock-client` are the only runnable helper modules today.
+
+Descriptions below about `proxy` and `cli` are target architecture, not already-implemented behavior.
 
 ### Subprojects
 
 #### Core
 
-- **proxy** — Core library of this project (not yet implemented). Provides a reverse proxy that converts OpenAI
-  non-streaming requests to streaming requests sent upstream, or streaming requests to non-streaming requests sent
-  upstream. Depends on ktor-client-core, ktor-http, ktor-io, kotlinx-serialization-json. No platform-specific engines;
-  consumers provide the engine.
-- **cli** — CLI wrapper for proxy (not yet implemented). A command-line program that reads a YAML config file to call
-  proxy and listens on the configured port, performing stream/non-stream conversion. Depends on `:proxy`.
+- **proxy** - Core library of this project (not yet implemented). It only handles one protocol conversion path:
+  downstream non-streaming `POST /v1/responses` requests are rewritten to upstream `stream: true`, the upstream SSE is
+  consumed, the final `Response` state is aggregated in memory, and then a normal non-streaming JSON response is
+  returned downstream. Requests that already have `stream=true`, requests with `background=true`, and all other paths
+  are passed through unchanged. Depends on `ktor-client-core`, `ktor-http`, `ktor-io`, and
+  `kotlinx-serialization-json`. No platform-specific engines; consumers provide the engine.
+- **cli** - CLI wrapper for `proxy` (not yet implemented). Reads config, starts the HTTP server, and delegates all
+  request handling to `proxy`.
 
-#### Auxiliary (not part of the core project)
+#### Auxiliary
 
-- **sniffer** — Development tool for analyzing OpenAI API traffic (JVM-only). A reverse proxy that intercepts and logs
-  request/
-  response headers and bodies to stdout via `TrafficLogger`. The collected data informs proxy development. Uses Ktor CIO
-  server. Configured via env vars `UPSTREAM_BASE_URL` and `LISTEN_PORT`.
-- **mock-client** — Development tool for programmatic data collection and testing. A client using the official
-  `openai-java` SDK (JVM-only). Works with sniffer to collect traffic data programmatically, or tests proxy
-  programmatically. Requires API key (env var `OPENAI_API_KEY`). Run via IDEA run configuration (env vars already set
-  there). Also configurable via `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_PROMPT`.
+- **sniffer** - JVM-only development tool for analyzing OpenAI API traffic. A reverse proxy that logs request and
+  response headers/bodies to stdout via `TrafficLogger`. Uses Ktor CIO server. Configured via `UPSTREAM_BASE_URL` and
+  `LISTEN_PORT`.
+- **mock-client** - JVM-only development tool using the official `openai-java` SDK. Works with `sniffer` or the future
+  proxy for data collection and testing. Requires `OPENAI_API_KEY`. Also configurable via `OPENAI_BASE_URL`,
+  `OPENAI_MODEL`, and `OPENAI_PROMPT`.
 
 ### Key Patterns
 
-- Platform-specific HTTP engines: `cli` uses `jvmMain`/`nativeMain` source sets to wire JVM (`ktor-client-cio`) vs
-  native (`ktor-client-curl`) engines. `proxy` is engine-agnostic (depends only on `ktor-client-core`; consumers provide
-  the engine). `sniffer` and `mock-client` are JVM-only.
-- `proxy` and `cli` target JVM, mingwX64, linuxX64, linuxArm64, macosArm64. `sniffer` and `mock-client` target JVM only.
-- `sniffer` and `mock-client` are JVM executables with all code in `commonMain` and `mainClass.set(...)` in the `jvm`
-  block. `proxy` is a library (no `binaries.executable`). `cli` is not yet implemented as an executable.
-- Configuration is read from environment variables — `sniffer`/`mock-client` use `System.getenv` directly. `proxy`/`cli`
-  will use `expect/actual` for cross-platform access once implemented.
+- `proxy` is engine-agnostic and depends only on common Ktor client/I/O APIs.
+- `proxy` only converts synchronous non-streaming `POST /v1/responses` requests.
+- Requests with `background=true` are not converted and must be passed through unchanged.
+- Requests with `stream=true` are not converted and must be passed through unchanged.
+- For the supported conversion path, `proxy` should aggregate the final `Response` state in memory and only then write
+  the downstream non-streaming JSON response. It should not stream partial JSON fragments downstream.
+- `cli` wires platform-specific HTTP client engines in platform source sets.
+- `proxy` and `cli` target JVM, mingwX64, linuxX64, linuxArm64, and macosArm64.
+- `sniffer` and `mock-client` are JVM executables with code in `commonMain` and `mainClass.set(...)` in the JVM block.
+- Configuration is read from environment variables in the current auxiliary tools. The future `proxy`/`cli` may use
+  `expect/actual` for cross-platform access if needed.
