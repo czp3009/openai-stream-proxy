@@ -1,34 +1,56 @@
 package com.hiczp.openai.responses.stream.proxy.sniffer
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.client.statement.*
 import io.ktor.http.*
-import io.ktor.server.request.*
-import io.ktor.utils.io.*
+import kotlinx.io.buffered
+import kotlinx.io.files.Path
+import kotlinx.io.files.SystemFileSystem
+import kotlinx.io.writeString
 
 private val logger = KotlinLogging.logger("TrafficLogger")
+private val dumpPath = Path("temp/sniffer")
 
 object TrafficLogger {
-    // Log incoming request headers.
-    fun logRequest(method: HttpMethod, uri: String, headers: Headers) {
+    fun logRequest(method: HttpMethod, version: String, uri: String, headers: Headers, body: ByteArray) {
         logger.info { ">>> ${method.value} $uri" }
         logHeaders(">>>", headers)
+        if (body.isNotEmpty()) {
+            logger.info { body.decodeToString() }
+        }
+
+        dumpPath.parent?.let { SystemFileSystem.createDirectories(it) }
+        SystemFileSystem.sink(dumpPath, append = true).buffered().use { sink ->
+            sink.writeString(buildString {
+                appendLine("${method.value} $uri $version")
+                headers.forEach { name, values ->
+                    values.forEach { appendLine("$name: $it") }
+                }
+                appendLine()
+                if (body.isNotEmpty()) append(body.decodeToString())
+                appendLine("\n\n")
+            })
+        }
     }
 
-    // Log incoming request body chunk.
-    fun logRequestBodyChunk(bytes: ByteArray) {
-        logger.info { bytes.decodeToString() }
-    }
-
-    // Log upstream response headers.
-    fun logResponse(status: HttpStatusCode, headers: Headers) {
+    fun logResponse(version: HttpProtocolVersion, status: HttpStatusCode, headers: Headers, body: ByteArray) {
         logger.info { "<<< ${status.value} ${status.description}" }
         logHeaders("<<<", headers)
-    }
+        if (body.isNotEmpty()) {
+            logger.info { body.decodeToString() }
+        }
 
-    // Log upstream response body chunk.
-    fun logResponseBodyChunk(bytes: ByteArray) {
-        logger.info { bytes.decodeToString() }
+        dumpPath.parent?.let { SystemFileSystem.createDirectories(it) }
+        SystemFileSystem.sink(dumpPath, append = true).buffered().use { sink ->
+            sink.writeString(buildString {
+                appendLine("$version ${status.value} ${status.description}")
+                headers.forEach { name, values ->
+                    values.forEach { appendLine("$name: $it") }
+                }
+                appendLine()
+                if (body.isNotEmpty()) append(body.decodeToString())
+                appendLine("\n\n")
+            })
+        }
     }
 
     private fun logHeaders(prefix: String, headers: Headers) {

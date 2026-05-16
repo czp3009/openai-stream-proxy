@@ -15,11 +15,12 @@ fun main() {
     val baseUrl = System.getenv("OPENAI_BASE_URL") ?: "http://localhost:8080"
     val model = System.getenv("OPENAI_MODEL") ?: "gpt-5.3-codex"
     val prompt = System.getenv("OPENAI_PROMPT") ?: "Hello"
+    val stream = System.getenv("OPENAI_STREAM")?.toBooleanStrictOrNull() ?: false
 
     logger.info { "Base URL: $baseUrl" }
     logger.info { "Model: $model" }
     logger.info { "Prompt: $prompt" }
-    logger.info { "Sending non-streaming request..." }
+    logger.info { "Stream: $stream" }
 
     val client = OpenAIOkHttpClient.builder()
         .apiKey(apiKey)
@@ -36,16 +37,29 @@ fun main() {
         .model(model)
         .build()
 
-    val response = client.responses().create(params)
+    if (stream) {
+        logger.info { "Sending streaming request..." }
+        client.responses().createStreaming(params).use { streamResponse ->
+            streamResponse.stream().forEach { event ->
+                event.outputTextDelta().ifPresent { textEvent ->
+                    print(textEvent.delta())
+                }
+            }
+        }
+        println()
+    } else {
+        logger.info { "Sending non-streaming request..." }
+        val response = client.responses().create(params)
 
-    logger.info { "Response ID: ${response.id()}" }
-    logger.info { "Status: ${response.status()}" }
+        logger.info { "Response ID: ${response.id()}" }
+        logger.info { "Status: ${response.status()}" }
 
-    val text = response.output()
-        .mapNotNull { it.message().orElse(null) }
-        .flatMap { it.content() }
-        .mapNotNull { it.outputText().orElse(null) }
-        .joinToString("") { it.text() }
+        val text = response.output()
+            .mapNotNull { it.message().orElse(null) }
+            .flatMap { it.content() }
+            .mapNotNull { it.outputText().orElse(null) }
+            .joinToString("") { it.text() }
 
-    logger.info { "Response: $text" }
+        println(text)
+    }
 }

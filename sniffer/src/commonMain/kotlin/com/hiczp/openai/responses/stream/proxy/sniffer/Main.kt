@@ -21,7 +21,7 @@ fun main() {
     }
     val proxy = ReverseProxy(client, config.upstreamBaseUrl)
 
-    embeddedServer(CIO, port = config.port, host = "0.0.0.0") {
+    embeddedServer(CIO, port = config.port) {
         routing {
             route("/{...}") {
                 handle {
