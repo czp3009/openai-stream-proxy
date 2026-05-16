@@ -14,8 +14,19 @@ No test suites exist yet.
 
 ## Running for Testing
 
-Since `sniffer` and the future proxy/CLI are long-running reverse proxy processes, prefer running them via IDEA run
-configurations rather than in the terminal. This keeps the process easy to stop and inspect.
+Modules require environment variables that are configured in IDEA run configurations. When running any module,
+**always use IDEA MCP to execute the IDEA run configuration** (`mcp__idea__execute_run_configuration`). Never run
+`./gradlew :module:run` from the command line, because the environment variables won't be set.
+
+The IDEA MCP cannot read the specific environment variable values inside a run configuration. To verify that a
+configuration is correct, run it and infer from the output (e.g. log lines showing resolved config values, or missing
+variable errors). If a required run configuration does not exist, or if the output suggests the configuration is wrong,
+ask the user to create or fix it in IDEA (Run → Edit Configurations).
+
+Current run configurations and their expected environment variables:
+
+- **sniffer [jvm]** — `UPSTREAM_BASE_URL` (required), `LISTEN_PORT` (optional)
+- **mock-client [jvm]** — `OPENAI_API_KEY` (required), `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_PROMPT` (optional)
 
 ## Project Architecture
 
