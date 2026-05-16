@@ -1,6 +1,6 @@
 # Implementation Plan: OpenAI Responses Non-Stream to Stream Proxy
 
-校对日期：2026-05-10
+校对日期：2026-05-17
 
 ## 目标
 
@@ -71,18 +71,45 @@
 
 1. `POST /v1/responses` 支持 `stream: true`。
 2. Responses 流是语义化 SSE 事件流。
-3. 常见事件包括 `response.created`、`response.in_progress`、`response.completed`、`response.failed`、
-   `response.output_text.delta` 等。
-4. create 的流式示例里，`response.completed` 带完整 `response`。
+3. 关键事件包括 `response.output_item.done`（完整输出项快照）、`response.completed`（终态，含完整元数据）、`response.failed`、
+   `response.incomplete`。
+4. `response.completed` 的 `response` 字段包含完整元数据（`id`、`model`、`usage` 等），但 `output` 数组可能为空（需要从
+   `response.output_item.done` 回退填充）。
 5. 同步 response 的取消方式是终止连接。
-6. 非流语义应尽量表现为“完整结果就绪后再返回普通 JSON”。
+6. 非流语义应尽量表现为”完整结果就绪后再返回普通 JSON”。
 
 ### 对本项目的含义
 
 1. 同步非流 create 可以改写为上游流 create。
-2. 代理不需要自己发明最终协议，只需要保留终态 `response`。
-3. 下游若中途断开，必须立刻中止上游同步流。
-4. v1 最稳的返回策略是：先在内存中聚合最终 `Response` 状态，再一次性返回下游。
+2. 代理按 SSE 聚合规则处理事件，无需理解输出项内部语义。
+3. 上游 / 下游断连、非 SSE 响应等异常场景的处理详见 SSE 聚合规则。
+
+## SSE 聚合规则
+
+代理按顺序读取上游 SSE 事件，执行以下逻辑：
+
+1. **收集 output 项**：每收到一个 `response.output_item.done` 事件，按其 `output_index` 作为数组下标，将 `item` 字段存入
+   output 数组。
+2. **成功终态**：收到 `response.completed` 时，检查其 `response.output`：
+   - 若为非空数组 → 直接将该 `response` 作为最终结果返回给下游。
+   - 若为 `null` / `undefined` / 空数组 → 将第 1 步积累的 output 数组填入 `response.output`，然后返回。
+3. **失败 / 未完成终态**：收到 `response.failed` 或 `response.incomplete` 时，直接返回其中的 `response` 对象。
+4. **上游断开连接**：若上游在发送终态事件之前断开连接（无 `response.completed` / `response.failed` / `response.incomplete`
+   ），则中断与下游的连接。
+5. **下游断开连接**：若下游在收到终态事件之前断开连接，则中断与上游的连接。
+6. **非 SSE 响应透传**：若上游返回的 `Content-Type` 不是 `text/event-stream`，则直接将上游的 HTTP 状态码、响应头和响应体透传给下游，不做任何处理。
+
+### 聚合规则的设计依据
+
+- `response.completed` 的 `response` 字段与非流式 `POST /v1/responses` 返回值结构相同，包含完整的元数据（`id`、`model`、
+  `status`、`usage` 等）。
+- 实践中 `response.completed` 的 `response.output` 可能为空数组（已通过 sniffer 截获确认，sub2api 项目也处理了此情况）。
+- `response.output_item.done` 的 `item` 字段包含完整的输出项 JSON（文本、annotations、function call 参数等），已通过官方文档和两个官方
+  SDK 源码确认。
+- 所有服务端实现（vLLM、ollama、LocalAI 等）均确保 `output_item.done` 包含完整内容。
+- 不需要处理 delta 级别的第三层回退——没有任何项目在 `output_item.done` 内容为空时退化为 delta 重建。
+- 工具调用不会导致代理阻塞——OpenAI Responses API 的工具调用是多轮请求模式，流在发送 `function_call` 后即正常结束（
+  `response.completed`），客户端在新 HTTP 请求中提交工具结果。
 
 ## 模块职责
 
@@ -92,7 +119,7 @@
 - 负责识别是否进入转换路径
 - 负责最小 JSON 改写
 - 负责上游 SSE 解析
-- 负责维护最终 `Response` 的内存聚合状态
+- 负责按聚合规则维护 output 数组和终态 response
 - 负责把终态 `response` 还原为下游普通 JSON
 - 负责其他路径的原始字节透传
 
@@ -112,11 +139,8 @@
 3. 对同步非流 create 执行最小 JSON 改写：
    - 仅把 `stream` 改成 `true`
 4. 实现通用 SSE 解析器
-5. 在内存中维护最终 `Response` 所需的聚合状态，而不是缓存全部原始 SSE 文本
-6. 在 `response.completed` 时抽取完整 `response`
-7. 定义 `response.failed` / `error` / 异常 EOF 的失败映射
-8. 监听下游断连并及时取消上游同步流
-9. 对 `background=true` 和 `stream=true` 请求直接透传
+5. 实现 SSE 聚合规则（完整覆盖规则 1–6）
+6. 对 `background=true` 和 `stream=true` 请求直接透传
 
 ## Ktor / I/O 结论
 
