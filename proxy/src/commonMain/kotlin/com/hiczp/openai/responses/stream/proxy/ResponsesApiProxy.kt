@@ -1,5 +1,7 @@
 package com.hiczp.openai.responses.stream.proxy
 
+import com.hiczp.openai.responses.stream.proxy.ResponsesApiProxy.Companion.errorResponse
+import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.engine.*
 import io.ktor.client.plugins.sse.*
@@ -9,9 +11,25 @@ import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.util.*
 import io.ktor.utils.io.*
+import kotlinx.io.IOException
 import kotlinx.io.readByteArray
 import kotlinx.serialization.json.*
 
+private val logger = KotlinLogging.logger {}
+
+/**
+ * Transparent proxy that converts downstream non-streaming OpenAI Responses API requests into
+ * upstream SSE streaming requests, aggregates the SSE events in memory, and returns the final
+ * non-streaming JSON response to the caller.
+ *
+ * Requests that already have `stream=true`, non-JSON requests are forwarded to the upstream
+ * unchanged (passthrough).
+ *
+ * @param engine the [HttpClientEngine] used for outbound HTTP requests.
+ *   Consumers provide a platform-specific engine (e.g. `CIO`, `OkHttp`).
+ * @param upstreamBaseUrl the base URL of the upstream OpenAI-compatible server
+ *   (e.g. `https://api.openai.com`). Must not end with a trailing slash.
+ */
 class ResponsesApiProxy(
     val engine: HttpClientEngine,
     val upstreamBaseUrl: String,
@@ -20,6 +38,39 @@ class ResponsesApiProxy(
         install(SSE)
     }
 
+    /**
+     * Proxies a single downstream request to the upstream server.
+     *
+     * For non-streaming JSON requests (where `stream` is absent or `false`),
+     * the request body is rewritten with `stream=true` and sent upstream as an SSE request.
+     * The SSE events are consumed and aggregated into a single JSON response, which is returned
+     * as an [OutgoingContent] for the caller to send downstream.
+     *
+     * All other requests (already streaming or non-JSON) are forwarded to the upstream
+     * unchanged (passthrough), and the upstream response is relayed as-is.
+     *
+     * ## Return value contract
+     *
+     * - **Non-null**: the caller should send the returned [OutgoingContent] to the downstream client
+     *   (e.g. via `call.respond(result)`).
+     * - **Null**: the upstream could not produce a valid response (network error, incomplete SSE stream,
+     *   upstream returned a non-SSE error, etc.). The caller should either drop the downstream connection
+     *   or respond with a status code that indicates an upstream error (e.g. 502 Bad Gateway).
+     *
+     * ## Exception contract
+     *
+     * This method throws an exception only for **non-network errors in the proxy itself** (e.g. bugs).
+     * The caller should catch such exceptions and return an error response to the downstream client
+     * (e.g. via [errorResponse]).
+     *
+     * @param requestMethod the HTTP method of the incoming request.
+     * @param requestPath the request URI path (and query string) relative to the proxy root.
+     * @param requestHeaders the incoming request headers.
+     * @param requestBody the incoming request body.
+     * @return an [OutgoingContent] to send downstream, or `null` if the upstream failed.
+     * @throws Exception for non-network errors in the proxy logic that the caller should translate
+     *   into an error response for the downstream client.
+     */
     suspend fun proxy(
         requestMethod: HttpMethod,
         requestPath: String,
@@ -31,16 +82,25 @@ class ResponsesApiProxy(
         val contentType = requestHeaders[HttpHeaders.ContentType]
             ?.let { runCatching { ContentType.parse(it) }.getOrNull() }
         if (contentType?.match(ContentType.Application.Json) != true) {
+            logger.debug { "Passthrough: ${requestMethod.value} $requestPath (non-JSON)" }
             return passthrough(upstreamUrl, requestMethod, requestHeaders, requestBody)
         }
 
-        val bodyBytes = requestBody.readRemaining().readByteArray()
+        val bodyBytes = try {
+            requestBody.readRemaining().readByteArray()
+        } catch (e: IOException) {
+            //downstream error
+            logger.warn { "Failed to read request body from downstream: ${e.message}" }
+            return null
+        }
         val bodyJson = runCatching { Json.parseToJsonElement(bodyBytes.decodeToString()) }.getOrNull()
 
         if (bodyJson is JsonObject && bodyJson["stream"]?.jsonPrimitive?.booleanOrNull != true) {
+            logger.debug { "Proxy flow: ${requestMethod.value} $requestPath" }
             return proxyFlow(upstreamUrl, requestHeaders, bodyJson)
         }
 
+        logger.debug { "Passthrough: ${requestMethod.value} $requestPath (already streaming)" }
         return passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes)
     }
 
@@ -70,23 +130,47 @@ class ResponsesApiProxy(
             }
         } catch (e: SSEClientException) {
             val response = e.response
-            return if (e.cause == null && response != null) {
-                val filteredHeaders = response.headers.filter { key, _ ->
-                    !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true)
-                }
-                val bodyChannel = response.bodyAsChannel()
-                object : OutgoingContent.ReadChannelContent() {
-                    override val contentLength = response.contentLength()
-                    override val status = response.status
-                    override val headers = Headers.build { appendAll(filteredHeaders) }
-                    override fun readFrom() = bodyChannel
+            return if (e.cause == null) {
+                //SSE stream isn't started
+                if (response != null) {
+                    //the server responds, but not SSE or status code not 200
+                    val filteredHeaders = response.headers.filter { key, _ ->
+                        !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true)
+                    }
+                    val bodyChannel = response.bodyAsChannel()
+                    object : OutgoingContent.ReadChannelContent() {
+                        override val contentLength = response.contentLength()
+                        override val status = response.status
+                        override val headers = Headers.build { appendAll(filteredHeaders) }
+                        override fun readFrom() = bodyChannel
+                    }
+                } else {
+                    //impossible
+                    logger.warn { "Unexpected SSEClientException for $upstreamUrl: ${e.message}" }
+                    null
                 }
             } else {
-                throw e
+                if (e.cause is SSEClientException) {
+                    //network error, SSE parsing failure, or reconnection exhaustion
+                    logger.warn { "SSE stream failed for $upstreamUrl: ${e.cause?.message}" }
+                    null
+                } else {
+                    //non-network error (e.g., bug in accumulator)
+                    //caller should convert the exception to errorResponse
+                    logger.warn { "Unexpected error for $upstreamUrl: ${e.cause?.message}" }
+                    throw e
+                }
             }
+        } catch (e: IOException) {
+            //other network error
+            logger.warn { "SSE request IOException for $upstreamUrl: ${e.message}" }
+            return null
         }
 
-        if (!accumulator.isTerminated) return null
+        if (!accumulator.isTerminated) {
+            logger.warn { "SSE stream ended without terminal event for $upstreamUrl" }
+            return null
+        }
 
         val response = accumulator.response
         val terminalType = accumulator.terminalType ?: return null
@@ -103,6 +187,7 @@ class ResponsesApiProxy(
         }
 
         val responseBytes = response.toString().encodeToByteArray()
+        logger.debug { "Completed: $upstreamUrl → $statusCode ($terminalType)" }
         return object : OutgoingContent.ByteArrayContent() {
             override val contentLength = responseBytes.size.toLong()
             override val status = statusCode
@@ -116,15 +201,20 @@ class ResponsesApiProxy(
         method: HttpMethod,
         headers: Headers,
         body: ByteReadChannel,
-    ): OutgoingContent {
+    ): OutgoingContent? {
         val forwardHeaders = headers.filter { key, _ ->
             !key.equals(HttpHeaders.Host, ignoreCase = true)
         }
 
-        val upstreamResponse = client.request(upstreamUrl) {
-            this.method = method
-            this.headers.appendAll(forwardHeaders)
-            this.setBody(body)
+        val upstreamResponse = try {
+            client.request(upstreamUrl) {
+                this.method = method
+                this.headers.appendAll(forwardHeaders)
+                this.setBody(body)
+            }
+        } catch (e: IOException) {
+            logger.warn { "Passthrough request to $upstreamUrl failed: ${e.message}" }
+            return null
         }
 
         val filteredHeaders = upstreamResponse.headers.filter { key, _ ->
@@ -145,7 +235,7 @@ class ResponsesApiProxy(
         method: HttpMethod,
         headers: Headers,
         bodyBytes: ByteArray,
-    ): OutgoingContent = passthrough(upstreamUrl, method, headers, ByteReadChannel(bodyBytes))
+    ): OutgoingContent? = passthrough(upstreamUrl, method, headers, ByteReadChannel(bodyBytes))
 
     private fun resolveStatusCode(
         terminalType: ResponseAccumulator.TerminalType,
@@ -166,6 +256,48 @@ class ResponsesApiProxy(
             "slow_down" -> HttpStatusCode.ServiceUnavailable
             "server_error" -> HttpStatusCode.InternalServerError
             else -> HttpStatusCode.BadRequest
+        }
+    }
+
+    companion object {
+        /**
+         * Builds an OpenAI-compatible error response body.
+         *
+         * For example, callers can use this when [proxy] returns `null` (e.g. HTTP 502 Bad Gateway)
+         * or throws an exception (e.g. HTTP 500 Internal Server Error).
+         *
+         * @param message the human-readable error message (placed in `error.message`).
+         * @param type the error type (placed in `error.type`).
+         * @param param the error param (placed in `error.param`). Defaults to `""`.
+         * @param code the error code (placed in `error.code`). Defaults to [type].
+         * @param status the HTTP status code for the response. Defaults to `502 Bad Gateway`.
+         * @return a [ByteArrayContent] with content type `application/json`
+         *   and an error object following the OpenAI error envelope format.
+         */
+        fun errorResponse(
+            message: String,
+            type: String,
+            param: String = "",
+            code: String = type,
+            status: HttpStatusCode = HttpStatusCode.BadGateway,
+        ): ByteArrayContent {
+            val body = JsonObject(
+                mapOf(
+                    "error" to JsonObject(
+                        mapOf(
+                            "message" to JsonPrimitive(message),
+                            "type" to JsonPrimitive(type),
+                            "param" to JsonPrimitive(param),
+                            "code" to JsonPrimitive(code),
+                        )
+                    )
+                )
+            )
+            return ByteArrayContent(
+                bytes = body.toString().encodeToByteArray(),
+                contentType = ContentType.Application.Json,
+                status = status,
+            )
         }
     }
 }
