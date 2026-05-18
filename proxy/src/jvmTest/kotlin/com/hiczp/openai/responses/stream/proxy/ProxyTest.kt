@@ -32,7 +32,7 @@ class ProxyTest {
             val result = try {
                 proxy.proxy(
                     requestMethod = call.request.httpMethod,
-                    requestPath = call.request.uri,
+                    requestUri = call.request.uri,
                     requestHeaders = call.request.headers,
                     requestBody = call.receiveChannel(),
                 )

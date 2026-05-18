@@ -22,8 +22,9 @@ private val logger = KotlinLogging.logger {}
  * upstream SSE streaming requests, aggregates the SSE events in memory, and returns the final
  * non-streaming JSON response to the caller.
  *
- * Requests that already have `stream=true`, non-JSON requests are forwarded to the upstream
- * unchanged (passthrough).
+ * Requests that do not match the conversion criteria (non-POST method, non-`/responses` path,
+ * non-JSON content type, missing `model` field, or `stream=true`) are forwarded to the
+ * upstream unchanged (passthrough).
  *
  * @param engine the [HttpClientEngine] used for outbound HTTP requests.
  *   Consumers provide a platform-specific engine (e.g. `CIO`, `OkHttp`).
@@ -41,13 +42,15 @@ class ResponsesApiProxy(
     /**
      * Proxies a single downstream request to the upstream server.
      *
-     * For non-streaming JSON requests (where `stream` is absent or `false`),
+     * For `POST` requests whose path ends with `/responses`, with JSON content type,
+     * a `model` field in the body, and `stream` absent or `false`,
      * the request body is rewritten with `stream=true` and sent upstream as an SSE request.
      * The SSE events are consumed and aggregated into a single JSON response, which is returned
      * as an [OutgoingContent] for the caller to send downstream.
      *
-     * All other requests (already streaming or non-JSON) are forwarded to the upstream
-     * unchanged (passthrough), and the upstream response is relayed as-is.
+     * All other requests (non-POST, non-`/responses` path, non-JSON content type,
+     * missing `model` field, or already streaming) are forwarded to the upstream unchanged
+     * (passthrough), and the upstream response is relayed as-is.
      *
      * ## Return value contract
      *
@@ -64,7 +67,7 @@ class ResponsesApiProxy(
      * (e.g. via [errorResponse]).
      *
      * @param requestMethod the HTTP method of the incoming request.
-     * @param requestPath the request URI path (and query string) relative to the proxy root.
+     * @param requestUri the request URI (path and query string) relative to the proxy root.
      * @param requestHeaders the incoming request headers.
      * @param requestBody the incoming request body.
      * @return an [OutgoingContent] to send downstream, or `null` if the upstream failed.
@@ -73,16 +76,22 @@ class ResponsesApiProxy(
      */
     suspend fun proxy(
         requestMethod: HttpMethod,
-        requestPath: String,
+        requestUri: String,
         requestHeaders: Headers,
         requestBody: ByteReadChannel,
     ): OutgoingContent? {
-        val upstreamUrl = upstreamBaseUrl.trimEnd('/') + requestPath
+        val path = requestUri.substringBefore('?').trimEnd('/')
+        val upstreamUrl = upstreamBaseUrl.trimEnd('/') + requestUri
+
+        if (requestMethod != HttpMethod.Post || !path.endsWith("/responses")) {
+            logger.debug { "Passthrough: ${requestMethod.value} $requestUri (not OpenAI Responses request)" }
+            return passthrough(upstreamUrl, requestMethod, requestHeaders, requestBody)
+        }
 
         val contentType = requestHeaders[HttpHeaders.ContentType]
             ?.let { runCatching { ContentType.parse(it) }.getOrNull() }
         if (contentType?.match(ContentType.Application.Json) != true) {
-            logger.debug { "Passthrough: ${requestMethod.value} $requestPath (non-JSON)" }
+            logger.debug { "Passthrough: ${requestMethod.value} $requestUri (non-JSON)" }
             return passthrough(upstreamUrl, requestMethod, requestHeaders, requestBody)
         }
 
@@ -91,20 +100,25 @@ class ResponsesApiProxy(
         } catch (e: IOException) {
             //downstream error
             logger.warn { "Failed to read request body from downstream: ${e.message}" }
-            return null
+            throw e
         }
         val bodyJson = runCatching { Json.parseToJsonElement(bodyBytes.decodeToString()) }.getOrNull()
 
-        if (bodyJson is JsonObject && bodyJson["stream"]?.jsonPrimitive?.booleanOrNull != true) {
-            logger.debug { "Proxy flow: ${requestMethod.value} $requestPath" }
-            return proxyFlow(upstreamUrl, requestHeaders, bodyJson)
+        if (bodyJson !is JsonObject || !bodyJson.contains("model")) {
+            logger.debug { "Passthrough: ${requestMethod.value} $requestUri (not OpenAI Responses request)" }
+            return passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes)
         }
 
-        logger.debug { "Passthrough: ${requestMethod.value} $requestPath (already streaming)" }
-        return passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes)
+        if (bodyJson["stream"]?.jsonPrimitive?.booleanOrNull == true) {
+            logger.debug { "Passthrough: ${requestMethod.value} $requestUri (already streaming)" }
+            return passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes)
+        }
+
+        logger.debug { "Proxy flow: ${requestMethod.value} $requestUri" }
+        return convert(upstreamUrl, requestHeaders, bodyJson)
     }
 
-    private suspend fun proxyFlow(
+    suspend fun convert(
         upstreamUrl: String,
         headers: Headers,
         bodyJson: JsonObject,
@@ -134,6 +148,7 @@ class ResponsesApiProxy(
                 //SSE stream isn't started
                 if (response != null) {
                     //the server responds, but not SSE or status code not 200
+                    logger.debug { "Server returned non-SSE response with status ${response.status}" }
                     val filteredHeaders = response.headers.filter { key, _ ->
                         !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true)
                     }
@@ -196,7 +211,7 @@ class ResponsesApiProxy(
         }
     }
 
-    private suspend fun passthrough(
+    suspend fun passthrough(
         upstreamUrl: String,
         method: HttpMethod,
         headers: Headers,
@@ -230,7 +245,7 @@ class ResponsesApiProxy(
         }
     }
 
-    private suspend fun passthrough(
+    suspend fun passthrough(
         upstreamUrl: String,
         method: HttpMethod,
         headers: Headers,
