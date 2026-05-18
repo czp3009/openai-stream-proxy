@@ -8,7 +8,7 @@ import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.writeString
 
 private val logger = KotlinLogging.logger("TrafficLogger")
-private val dumpPath = Path("temp/sniffer")
+private val dumpPath = Path("temp/sniffer.txt")
 
 object TrafficLogger {
     fun logRequest(method: HttpMethod, version: String, uri: String, headers: Headers, body: ByteArray) {

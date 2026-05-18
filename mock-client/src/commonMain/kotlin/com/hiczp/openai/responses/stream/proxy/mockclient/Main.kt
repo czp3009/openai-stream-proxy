@@ -12,7 +12,7 @@ fun main() {
     val apiKey = System.getenv("OPENAI_API_KEY")
         ?: error("OPENAI_API_KEY environment variable is required")
 
-    val baseUrl = System.getenv("OPENAI_BASE_URL") ?: "http://localhost:8080"
+    val baseUrl = System.getenv("OPENAI_BASE_URL") ?: "http://localhost:8080/v1"
     val model = System.getenv("OPENAI_MODEL") ?: "gpt-5.3-codex"
     val prompt = System.getenv("OPENAI_PROMPT") ?: "Hello"
     val stream = System.getenv("OPENAI_STREAM")?.toBooleanStrictOrNull() ?: false
