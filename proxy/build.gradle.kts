@@ -12,10 +12,10 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation(libs.ktor.client.core)
-            implementation(libs.ktor.http)
-            implementation(libs.ktor.io)
-            implementation(libs.kotlinx.serialization.json)
+            api(libs.ktor.client.core)
+            api(libs.ktor.http)
+            api(libs.ktor.io)
+            api(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.coroutines.core)
         }
 
