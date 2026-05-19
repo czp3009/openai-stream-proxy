@@ -1,10 +1,12 @@
+import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
 }
 
 kotlin {
     jvm {
-        @OptIn(org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi::class)
+        @OptIn(ExperimentalKotlinGradlePluginApi::class)
         binaries {
             executable {
                 mainClass.set("com.hiczp.openai.responses.stream.proxy.sniffer.MainKt")

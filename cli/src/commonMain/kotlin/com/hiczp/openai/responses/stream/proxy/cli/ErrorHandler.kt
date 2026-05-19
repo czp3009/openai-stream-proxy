@@ -12,7 +12,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlin.time.DurationUnit
 
-private val logger = KotlinLogging.logger {}
+private val logger = KotlinLogging.logger("ErrorHandler")
 
 fun Application.installErrorHandler() {
     install(StatusPages) {
@@ -26,6 +26,7 @@ fun Application.installErrorHandler() {
                     throw throwable
                 }
             }
+            logger.error { "Internal server error: ${throwable.message}" }
             val errorResponse = ResponsesApiProxy.errorResponse(
                 message = throwable.message ?: "Proxy internal error",
                 type = "internal_error",

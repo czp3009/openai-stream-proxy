@@ -16,7 +16,7 @@ import kotlinx.io.IOException
 import kotlinx.io.readByteArray
 import kotlinx.serialization.json.*
 
-private val logger = KotlinLogging.logger {}
+private val logger = KotlinLogging.logger("ResponsesApiProxy")
 
 /**
  * Transparent proxy that converts downstream non-streaming OpenAI Responses API requests into

@@ -16,7 +16,6 @@ kotlin {
             api(libs.ktor.http)
             api(libs.ktor.io)
             api(libs.kotlinx.serialization.json)
-            implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlin.logging)
         }
 

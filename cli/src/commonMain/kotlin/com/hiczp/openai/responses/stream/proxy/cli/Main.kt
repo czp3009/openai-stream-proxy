@@ -23,7 +23,7 @@ import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import io.ktor.server.cio.CIO as ServerCIO
 
-private val logger = KotlinLogging.logger {}
+private val logger = KotlinLogging.logger("ProxyCLI")
 private val timeSource = TimeSource.Monotonic
 internal val RequestStartMarkKey = AttributeKey<TimeMark>("RequestStartMark")
 
@@ -66,7 +66,7 @@ fun main(args: Array<String>) {
 
     registerShutdownHook {
         logger.info { "Shutting down ${servers.size} server(s)..." }
-        servers.forEach { it.stop(1000L, 2000L) }
+        servers.forEach { it.stop(2_000L, 5_000L) }
     }
 
     runBlocking { awaitCancellation() }
