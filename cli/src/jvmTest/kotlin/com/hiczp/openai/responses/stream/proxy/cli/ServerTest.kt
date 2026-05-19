@@ -199,4 +199,40 @@ class ServerTest {
             downstreamServer.stop()
         }
     }
+
+    @Test
+    fun `routes requests to correct upstream based on port`() = runBlocking {
+        val upstreamPortA = findFreePort()
+        val upstreamPortB = findFreePort()
+        val portA = findFreePort()
+        val portB = findFreePort()
+
+        val upstreamA = embeddedServer(ServerCIO, port = upstreamPortA) {
+            routing { get("/identify") { call.respondText("upstream-A") } }
+        }.start()
+        val upstreamB = embeddedServer(ServerCIO, port = upstreamPortB) {
+            routing { get("/identify") { call.respondText("upstream-B") } }
+        }.start()
+
+        val proxies = mapOf(
+            portA to ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPortA"),
+            portB to ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPortB"),
+        )
+
+        val server = embeddedServer(
+            ServerCIO,
+            configure = { proxies.keys.forEach { connector { port = it } } }
+        ) { configureProxyServer(proxies) }.start()
+
+        val client = HttpClient(CIO)
+        try {
+            assertEquals("upstream-A", client.get("http://127.0.0.1:$portA/identify").bodyAsText())
+            assertEquals("upstream-B", client.get("http://127.0.0.1:$portB/identify").bodyAsText())
+        } finally {
+            client.close()
+            server.stop()
+            upstreamA.stop()
+            upstreamB.stop()
+        }
+    }
 }

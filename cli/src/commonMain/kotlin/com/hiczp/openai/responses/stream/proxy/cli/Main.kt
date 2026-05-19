@@ -46,38 +46,41 @@ fun main(args: Array<String>) {
         logger.error { "Invalid config file: $configFile" }
         throw e
     }
-    val rules = config.rules
-    logger.info { "Loaded ${rules.size} rule(s) from $configFile" }
-    if (rules.isEmpty()) {
+    val clientEngine = CIO.create()
+    val proxies = config.rules.associate { rule ->
+        rule.listenPort to ResponsesApiProxy(
+            engine = clientEngine,
+            upstreamBaseUrl = rule.upstreamUrl,
+            timeoutMillis = config.timeoutSeconds * 1_000,
+        )
+    }
+    logger.info { "Loaded ${proxies.size} rule(s) from $configFile" }
+    if (proxies.isEmpty()) {
         logger.error { "No rule found in config file: $configFile" }
         return
     }
-
-    val engine = CIO.create()
-    val timeoutSeconds = config.timeoutSeconds
-
-    //TODO single ktor server instance listen on multi ports
-    val servers = rules.map { rule ->
-        val proxy = ResponsesApiProxy(engine, rule.upstreamUrl, timeoutMillis = timeoutSeconds * 1000)
-        logger.info { "Rule: port=${rule.listenPort} -> ${rule.upstreamUrl}" }
-
-        embeddedServer(ServerCIO, port = rule.listenPort) {
-            configureProxyServer(proxy)
-        }.start()
+    proxies.forEach { (port, proxy) ->
+        logger.info { "Proxy: port=$port -> ${proxy.upstreamBaseUrl}" }
     }
 
-    registerShutdownHook {
-        logger.info { "Shutting down ${servers.size} server(s)..." }
-        rules.zip(servers).forEach { (rule, server) ->
-            server.stop(2_000L, 5_000L)
-            logger.info { "Stopped server on port ${rule.listenPort}" }
+    val server = embeddedServer(
+        ServerCIO,
+        configure = {
+            proxies.keys.forEach { listenPort -> connector { port = listenPort } }
         }
+    ) {
+        configureProxyServer(proxies)
+    }.start()
+
+    registerShutdownHook {
+        logger.info { "Shutting down server..." }
+        server.stop(2_000L, 5_000L)
     }
 
     runBlocking { awaitCancellation() }
 }
 
-private fun Application.configureProxyServer(proxy: ResponsesApiProxy) {
+internal fun Application.configureProxyServer(proxies: Map<Int, ResponsesApiProxy>) {
     install(HttpRequestLifecycle) {
         cancelCallOnClose = true
     }
@@ -87,6 +90,8 @@ private fun Application.configureProxyServer(proxy: ResponsesApiProxy) {
             handle {
                 val startMark = timeSource.markNow()
                 call.attributes.put(RequestStartMarkKey, startMark)
+
+                val proxy = proxies.getValue(call.request.local.localPort)
 
                 val method = call.request.httpMethod
                 val uri = call.request.uri
