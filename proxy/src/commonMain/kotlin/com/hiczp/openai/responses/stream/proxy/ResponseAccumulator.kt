@@ -1,7 +1,10 @@
 package com.hiczp.openai.responses.stream.proxy
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.sse.*
 import kotlinx.serialization.json.*
+
+private val logger = KotlinLogging.logger {}
 
 /**
  * Accumulates SSE events from an OpenAI Responses API streaming response into a single
@@ -47,15 +50,22 @@ class ResponseAccumulator {
      * Events are processed only until a terminal event is received; subsequent calls are no-ops.
      */
     fun accumulate(event: ServerSentEvent) {
-        if (isTerminated) return
+        if (isTerminated) {
+            logger.trace { "Dropping event after termination: ${event.event}" }
+            return
+        }
 
-        val data = event.data ?: return
+        val data = event.data ?: run {
+            logger.trace { "Dropping event with no data: ${event.event}" }
+            return
+        }
         val jsonData = Json.parseToJsonElement(data).jsonObject
 
         when (event.event) {
             "response.output_item.done" -> {
                 val outputIndex = jsonData["output_index"]?.jsonPrimitive?.int ?: return
                 val item = jsonData["item"] ?: return
+                logger.trace { "Output item done: index=$outputIndex, type=${item.jsonObject["type"]}" }
                 ensureCapacity(outputIndex + 1)
                 outputArray[outputIndex] = item
             }
@@ -65,19 +75,23 @@ class ResponseAccumulator {
                 val output = upstreamResponse["output"]
                 val noOutput = output == null || output is JsonNull || (output is JsonArray && output.isEmpty())
                 syntheticResponse = if (noOutput) {
+                    logger.trace { "Response completed: assembling ${outputArray.size} output items from accumulator" }
                     JsonObject(upstreamResponse + ("output" to JsonArray(outputArray.mapNotNull { it })))
                 } else {
+                    logger.trace { "Response completed: using upstream output directly" }
                     upstreamResponse
                 }
                 terminalType = TerminalType.COMPLETED
             }
 
             "response.failed" -> {
+                logger.trace { "Response failed: ${jsonData["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull}" }
                 syntheticResponse = jsonData["response"]?.jsonObject ?: return
                 terminalType = TerminalType.FAILED
             }
 
             "response.incomplete" -> {
+                logger.trace { "Response incomplete: ${jsonData["incomplete_details"]?.jsonObject?.get("reason")?.jsonPrimitive?.contentOrNull}" }
                 syntheticResponse = jsonData["response"]?.jsonObject ?: return
                 terminalType = TerminalType.INCOMPLETE
             }

@@ -23,8 +23,14 @@ ask the user to create or fix it in IDEA (Run → Edit Configurations).
 
 Current run configurations and their expected environment variables:
 
-- **sniffer [jvm]** — `UPSTREAM_BASE_URL` (required), `LISTEN_PORT` (optional)
-- **mock-client [jvm]** — `OPENAI_API_KEY` (required), `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_PROMPT` (optional)
+- **cli [jvm]** — no environment variables; reads a JSON config file (default `config.json`, override with
+  `--config-file`)
+- **sniffer [jvm]** — `UPSTREAM_BASE_URL` (optional, default `https://api.openai.com`), `LISTEN_PORT` (optional, default
+  `8080`)
+- **mock-client [jvm] stream** / **mock-client [jvm] non-stream** — `OPENAI_API_KEY` (required), `OPENAI_BASE_URL`,
+  `OPENAI_MODEL`, `OPENAI_PROMPT` (optional)
+- **openai-responses-stream-proxy-0.0.1[mingwX64/linuxX64/macosArm64]** — native CLI binaries; same config-file argument
+  as JVM
 
 ## Project Architecture
 
@@ -34,30 +40,43 @@ Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Kto
 
 #### Core
 
-- **proxy** - Core library. Handles one protocol conversion path: downstream non-streaming `POST /v1/responses`
-  requests are rewritten to upstream `stream: true`, the upstream SSE is consumed, the final `Response` state is
-  aggregated in memory, and then a normal non-streaming JSON response is returned downstream. Requests
-  that do not match the conversion criteria (non-POST, non-`/responses` path, non-JSON content type,
-  missing `model` field, or `stream=true`) are passed through unchanged. Depends on
-  `ktor-client-core`, `ktor-http`, `ktor-io`, and `kotlinx-serialization-json`. No platform-specific engines;
+- **proxy** - Core library. `ResponsesApiProxy` handles one protocol conversion path: downstream
+  non-streaming `POST /v1/responses` requests are rewritten to upstream `stream: true`, the upstream
+  SSE is consumed by `ResponseAccumulator` (which collects `response.output_item.done` events and waits
+  for a terminal event: `response.completed`, `response.failed`, or `response.incomplete`), the final
+  `Response` state is assembled in memory, and a non-streaming JSON response is returned downstream.
+  Requests that do not match the conversion criteria (non-POST, non-`/responses` path, non-JSON content type,
+  missing `model` field, or `stream=true`) are passed through unchanged via `passthrough()`.
+  When the upstream returns a non-SSE error response during the SSE connect phase, it is relayed as-is.
+  Returns `OutgoingContent?` — null signals an upstream failure (incomplete stream, network error);
+  exceptions signal proxy bugs (caller should map to 500). Depends on `ktor-client-core`, `ktor-http`,
+  `ktor-io`, `kotlinx-serialization-json`, and `kotlin-logging`. No platform-specific engines;
   consumers provide the engine.
-- **cli** - CLI wrapper for `proxy`. Reads a JSON config file (via `--config-file`, default `config.json`), starts one
-  Ktor CIO server per config rule (each listening on a different port). Routes non-POST, non-`/responses`,
-  or non-JSON requests to `passthrough()` and all others to `proxy()`. Both return `OutgoingContent?`; null → 502
-  `upstream_error`,
-  exceptions → 500 `internal_error` via StatusPages.
-  Uses `kotlinx-cli` for argument parsing. Targets JVM, mingwX64, linuxX64, macosArm64 (not linuxArm64 — `kotlinx-cli`
-  doesn't support it).
+- **cli** - CLI wrapper for `proxy`. Reads a JSON config file (via `--config-file`, default `config.json`)
+  with the structure `{"timeoutSeconds": 600, "rules": [{"listenPort": 8080, "upstreamUrl": "..."}]}`,
+  starts one Ktor CIO server per config rule (each listening on a different port). All requests are
+  handled by a catch-all `route("/{...}")`; POST requests with `/responses` path and JSON content type
+  go to `proxy.proxy()` (which internally checks for `model` and `stream=true`), all others go to
+  `proxy.passthrough()`. Both return `OutgoingContent?`; null → 502 `upstream_error` (via
+  `ResponsesApiProxy.errorResponse()`), exceptions → 500 `internal_error` via StatusPages
+  (`ErrorHandler.kt` uses `CancellationException`-aware handler). Platform-specific shutdown:
+  JVM uses `Runtime.addShutdownHook`, native registers `SIGTERM`/`SIGINT` handlers; servers stopped
+  with 2s grace / 5s timeout. Uses `kotlinx-cli` for argument parsing and the `shadow` Gradle plugin
+  for JVM fat JAR packaging. Targets JVM, mingwX64, linuxX64, macosArm64 (not linuxArm64 —
+  `kotlinx-cli` doesn't support it).
 
 #### Auxiliary
 
-- **sniffer** - JVM-only development tool for analyzing OpenAI API traffic. A reverse proxy that logs request and
-  response headers/bodies to stdout via `TrafficLogger`. Uses Ktor CIO server. Configured via `UPSTREAM_BASE_URL` and
-  `LISTEN_PORT`.
-- **mock-client** - JVM-only development tool using the official `openai-java` SDK. Works with `sniffer`, `cli`, or
-  any OpenAI-compatible proxy for data collection and testing. Supports both streaming and non-streaming modes.
-  Requires `OPENAI_API_KEY`. Also configurable via `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_PROMPT`,
-  and `OPENAI_STREAM` (optional).
+- **sniffer** - JVM-only development tool for analyzing OpenAI API traffic. A reverse proxy
+  (`ReverseProxy`) that buffers entire request/response bodies and logs headers and bodies both to
+  stdout (via `TrafficLogger` + `kotlin-logging`) and to `temp/sniffer.txt`. Uses Ktor CIO client
+  and server. Configured via environment variables: `UPSTREAM_BASE_URL` (default `https://api.openai.com`)
+  and `LISTEN_PORT` (default `8080`).
+- **mock-client** - JVM-only development tool using the official `openai-java` SDK (`OpenAIOkHttpClient`).
+  Works with `sniffer`, `cli`, or any OpenAI-compatible proxy for data collection and testing.
+  Supports streaming (`createStreaming`) and non-streaming (`create`) modes. Requires `OPENAI_API_KEY`.
+  Also configurable via `OPENAI_BASE_URL` (default `http://localhost:8080/v1`), `OPENAI_MODEL`
+  (default `gpt-5.3-codex`), `OPENAI_PROMPT` (default `"Hello"`), and `OPENAI_STREAM` (default `false`).
 
 ### Key Patterns
 
@@ -66,7 +85,13 @@ Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Kto
 - Requests with `stream=true` are not converted and must be passed through unchanged.
 - For the supported conversion path, `proxy` aggregates the final `Response` state in memory and only then writes
   the downstream non-streaming JSON response. It does not stream partial JSON fragments downstream.
+- `ResponseAccumulator` is not thread-safe — `accumulate()` must be called from a single coroutine.
 - `cli` uses CIO engine everywhere (client and server), no HTTPS support.
+- `cli` uses `expect/actual` for `configureLogging()` (JVM sets logback to INFO; native is no-op) and
+  `registerShutdownHook()` (JVM uses `Runtime.addShutdownHook`; native uses POSIX `signal`).
 - `proxy` targets JVM, mingwX64, linuxX64, linuxArm64, and macosArm64.
 - `cli` targets JVM, mingwX64, linuxX64, and macosArm64 (no linuxArm64).
 - `sniffer` and `mock-client` are JVM executables with code in `commonMain` and `mainClass.set(...)` in the JVM block.
+- Test SSE fixtures are in `commonTest/resources` under each module's package path.
+- Tests use real Ktor CIO servers on ephemeral ports (`ServerSocket(0)`) — no mocks.
+- `proxy` tests additionally use the `openai-java` SDK as the downstream client for end-to-end verification.
