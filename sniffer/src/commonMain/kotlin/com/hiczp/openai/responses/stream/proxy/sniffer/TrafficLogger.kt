@@ -7,7 +7,7 @@ import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.writeString
 
-private val logger = KotlinLogging.logger("TrafficLogger")
+private val logger = KotlinLogging.logger {}
 private val dumpPath = Path("temp/sniffer.txt")
 
 object TrafficLogger {

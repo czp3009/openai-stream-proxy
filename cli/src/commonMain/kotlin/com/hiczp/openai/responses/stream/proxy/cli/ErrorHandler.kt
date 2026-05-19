@@ -12,7 +12,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlin.time.DurationUnit
 
-private val logger = KotlinLogging.logger("ErrorHandler")
+private val logger = KotlinLogging.logger {}
 
 fun Application.installErrorHandler() {
     install(StatusPages) {
