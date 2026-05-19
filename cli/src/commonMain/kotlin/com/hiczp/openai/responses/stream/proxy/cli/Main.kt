@@ -11,17 +11,25 @@ import io.ktor.server.http.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.util.*
 import kotlinx.cli.ArgParser
 import kotlinx.cli.ArgParser.OptionPrefixStyle
 import kotlinx.cli.ArgType
 import kotlinx.cli.default
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
+import kotlin.time.DurationUnit
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 import io.ktor.server.cio.CIO as ServerCIO
 
 private val logger = KotlinLogging.logger {}
+private val timeSource = TimeSource.Monotonic
+internal val RequestStartMarkKey = AttributeKey<TimeMark>("RequestStartMark")
 
 fun main(args: Array<String>) {
+    configureLogging()
+
     val parser = ArgParser("openai-responses-stream-proxy", prefixStyle = OptionPrefixStyle.GNU)
     val configFile by parser.option(
         ArgType.String,
@@ -72,32 +80,39 @@ private fun Application.configureProxyServer(proxy: ResponsesApiProxy) {
     routing {
         route("/{...}") {
             handle {
+                val startMark = timeSource.markNow()
+                call.attributes.put(RequestStartMarkKey, startMark)
+
                 val method = call.request.httpMethod
                 val uri = call.request.uri
                 val path = uri.substringBefore('?').trimEnd('/')
                 val upstreamUrl = proxy.upstreamBaseUrl.trimEnd('/') + uri
-                logger.debug { "Handling request [${call.request.host()}:${call.request.port()} -> ${proxy.upstreamBaseUrl}]" }
+
+                logger.info { "Request [${call.request.host()}:${call.request.port()} -> ${proxy.upstreamBaseUrl}] ${method.value} $uri" }
 
                 val result = if (method != HttpMethod.Post
                     || !path.endsWith("/responses")
                     || !call.request.contentType().match(ContentType.Application.Json)
                 ) {
-                    logger.debug { "Direct forward: ${method.value} $path (not OpenAI Responses request)" }
+                    logger.info { "Direct forward: ${method.value} $path (not OpenAI Responses request)" }
                     proxy.passthrough(upstreamUrl, method, call.request.headers, call.receiveChannel())
                 } else {
                     proxy.proxy(method, uri, call.request.headers, call.receiveChannel())
                 }
 
-                if (result != null) {
+                val statusCode = if (result != null) {
                     call.respond(result)
+                    result.status
                 } else {
-                    call.respond(
-                        errorResponse(
-                            message = "Upstream returned incomplete or invalid response",
-                            type = "upstream_error",
-                        )
+                    val errorResponse = errorResponse(
+                        message = "Upstream returned incomplete or invalid response",
+                        type = "upstream_error",
                     )
+                    call.respond(errorResponse)
+                    errorResponse.status
                 }
+                val elapsed = startMark.elapsedNow().toInt(DurationUnit.MILLISECONDS)
+                logger.info { "${method.value} $uri ${statusCode?.value ?: "<UnknownStatus>"} (${elapsed}ms)" }
             }
         }
     }

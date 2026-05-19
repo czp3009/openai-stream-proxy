@@ -123,7 +123,7 @@ class ResponsesApiProxy(
             return passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes)
         }
 
-        logger.debug { "Proxy flow: ${requestMethod.value} $requestUri" }
+        logger.info { "Proxy flow: ${requestMethod.value} $requestUri" }
         return convert(upstreamUrl, requestHeaders, bodyJson)
     }
 
@@ -157,7 +157,7 @@ class ResponsesApiProxy(
                 //SSE stream isn't started
                 if (response != null) {
                     //the server responds, but not SSE or status code not 200
-                    logger.debug { "Server returned non-SSE response with status ${response.status}" }
+                    logger.info { "Server returned non-SSE response with status ${response.status}" }
                     val filteredHeaders = response.headers.filter { key, _ ->
                         !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true)
                     }
@@ -211,7 +211,7 @@ class ResponsesApiProxy(
         }
 
         val responseBytes = response.toString().encodeToByteArray()
-        logger.debug { "Completed: $upstreamUrl → $statusCode ($terminalType)" }
+        logger.info { "Completed: $upstreamUrl → $statusCode ($terminalType)" }
         return object : OutgoingContent.ByteArrayContent() {
             override val contentLength = responseBytes.size.toLong()
             override val status = statusCode
