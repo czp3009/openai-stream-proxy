@@ -7,6 +7,7 @@ import io.ktor.client.engine.cio.*
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
+import io.ktor.server.http.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -30,12 +31,13 @@ fun main(args: Array<String>) {
     ).default("config.json")
     parser.parse(args)
 
-    val rules = try {
+    val config = try {
         loadConfig(configFile)
     } catch (e: Exception) {
         logger.error { "Invalid config file: $configFile" }
         throw e
     }
+    val rules = config.rules
     logger.info { "Loaded ${rules.size} rule(s) from $configFile" }
     if (rules.isEmpty()) {
         logger.error { "No rule found in config file: $configFile" }
@@ -43,9 +45,10 @@ fun main(args: Array<String>) {
     }
 
     val engine = CIO.create()
+    val timeoutSeconds = config.timeoutSeconds
 
     val servers = rules.map { rule ->
-        val proxy = ResponsesApiProxy(engine, rule.upstreamUrl)
+        val proxy = ResponsesApiProxy(engine, rule.upstreamUrl, timeoutMillis = timeoutSeconds * 1000)
         logger.info { "Rule: port=${rule.listenPort} -> ${rule.upstreamUrl}" }
 
         embeddedServer(ServerCIO, port = rule.listenPort) {
@@ -62,6 +65,9 @@ fun main(args: Array<String>) {
 }
 
 private fun Application.configureProxyServer(proxy: ResponsesApiProxy) {
+    install(HttpRequestLifecycle) {
+        cancelCallOnClose = true
+    }
     installErrorHandler()
     routing {
         route("/{...}") {
@@ -76,7 +82,7 @@ private fun Application.configureProxyServer(proxy: ResponsesApiProxy) {
                     || !path.endsWith("/responses")
                     || !call.request.contentType().match(ContentType.Application.Json)
                 ) {
-                    logger.debug { "Passthrough: ${method.value} $path (not OpenAI Responses request)" }
+                    logger.debug { "Direct forward: ${method.value} $path (not OpenAI Responses request)" }
                     proxy.passthrough(upstreamUrl, method, call.request.headers, call.receiveChannel())
                 } else {
                     proxy.proxy(method, uri, call.request.headers, call.receiveChannel())

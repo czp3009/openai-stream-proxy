@@ -10,27 +10,36 @@ class ConfigTest {
     private val json = Json { ignoreUnknownKeys = true }
 
     @Test
-    fun `parses multiple rules`() {
+    fun `parses config with multiple rules`() {
         val text =
-            """[{"listenPort":8080,"upstreamUrl":"http://a.com"},{"listenPort":8081,"upstreamUrl":"http://b.com"}]"""
-        val rules = json.decodeFromString<List<ProxyRule>>(text)
-        assertEquals(2, rules.size)
-        assertEquals(8080, rules[0].listenPort)
-        assertEquals("http://a.com", rules[0].upstreamUrl)
-        assertEquals(8081, rules[1].listenPort)
-        assertEquals("http://b.com", rules[1].upstreamUrl)
+            """{"rules":[{"listenPort":8080,"upstreamUrl":"http://a.com"},{"listenPort":8081,"upstreamUrl":"http://b.com"}]}"""
+        val config = json.decodeFromString<ProxyConfig>(text)
+        assertEquals(2, config.rules.size)
+        assertEquals(8080, config.rules[0].listenPort)
+        assertEquals("http://a.com", config.rules[0].upstreamUrl)
+        assertEquals(8081, config.rules[1].listenPort)
+        assertEquals("http://b.com", config.rules[1].upstreamUrl)
+        assertEquals(600L, config.timeoutSeconds)
     }
 
     @Test
-    fun `parses empty array`() {
-        val rules = json.decodeFromString<List<ProxyRule>>("[]")
-        assertTrue(rules.isEmpty())
+    fun `parses config with custom timeout`() {
+        val text = """{"timeoutSeconds":300,"rules":[{"listenPort":8080,"upstreamUrl":"http://a.com"}]}"""
+        val config = json.decodeFromString<ProxyConfig>(text)
+        assertEquals(300L, config.timeoutSeconds)
+        assertEquals(1, config.rules.size)
+    }
+
+    @Test
+    fun `parses config with empty rules`() {
+        val config = json.decodeFromString<ProxyConfig>("""{"rules":[]}""")
+        assertTrue(config.rules.isEmpty())
     }
 
     @Test
     fun `throws on missing required field`() {
         assertFailsWith<Exception> {
-            json.decodeFromString<List<ProxyRule>>("""[{"listenPort":8080}]""")
+            json.decodeFromString<ProxyConfig>("""{"rules":[{"listenPort":8080}]}""")
         }
     }
 
@@ -44,7 +53,7 @@ class ConfigTest {
     @Test
     fun `throws on malformed json`() {
         assertFailsWith<Exception> {
-            json.decodeFromString<List<ProxyRule>>("not json")
+            json.decodeFromString<ProxyConfig>("not json")
         }
     }
 }

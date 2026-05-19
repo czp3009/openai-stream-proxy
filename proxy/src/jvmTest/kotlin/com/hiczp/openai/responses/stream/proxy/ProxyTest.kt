@@ -5,7 +5,9 @@ import com.openai.errors.OpenAIServiceException
 import com.openai.models.responses.EasyInputMessage
 import com.openai.models.responses.ResponseCreateParams
 import com.openai.models.responses.ResponseInputItem
+import io.ktor.client.*
 import io.ktor.client.engine.cio.*
+import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.server.engine.*
@@ -14,6 +16,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.runBlocking
 import java.net.ServerSocket
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -253,6 +256,79 @@ class ProxyTest {
             assertEquals(500, exception.statusCode())
         } finally {
             downstreamServer.stop()
+        }
+    }
+
+    @Test
+    fun `query params are forwarded in convert flow`() = runBlocking {
+        val upstreamPort = findFreePort()
+        val downstreamPort = findFreePort()
+        val capturedUri = AtomicReference<String>()
+
+        val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
+            routing {
+                post("/v1/responses") {
+                    capturedUri.set(call.request.uri)
+                    call.respond(object : OutgoingContent.ByteArrayContent() {
+                        override val contentType = ContentType("text", "event-stream")
+                        override fun bytes(): ByteArray = sseResponseText
+                    })
+                }
+            }
+        }.start()
+
+        val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
+
+        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+            routing { proxyHandler(proxy) }
+        }.start()
+
+        try {
+            val client = HttpClient(CIO.create())
+            val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses?foo=bar&baz=123") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4","input":"hello"}""")
+            }
+            assertEquals(200, response.status.value)
+            assertEquals("/v1/responses?foo=bar&baz=123", capturedUri.get())
+        } finally {
+            downstreamServer.stop()
+            upstreamServer.stop()
+        }
+    }
+
+    @Test
+    fun `query params are forwarded in passthrough flow`() = runBlocking {
+        val upstreamPort = findFreePort()
+        val downstreamPort = findFreePort()
+        val capturedUri = AtomicReference<String>()
+
+        val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
+            routing {
+                post("/v1/responses") {
+                    capturedUri.set(call.request.uri)
+                    call.respondText("ok", ContentType.Text.Plain)
+                }
+            }
+        }.start()
+
+        val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
+
+        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+            routing { proxyHandler(proxy) }
+        }.start()
+
+        try {
+            val client = HttpClient(CIO.create())
+            val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses?key=value") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gpt-4","input":"hello","stream":true}""")
+            }
+            assertEquals(200, response.status.value)
+            assertEquals("/v1/responses?key=value", capturedUri.get())
+        } finally {
+            downstreamServer.stop()
+            upstreamServer.stop()
         }
     }
 }

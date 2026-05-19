@@ -13,9 +13,15 @@ data class ProxyRule(
     val upstreamUrl: String,
 )
 
+@Serializable
+data class ProxyConfig(
+    val timeoutSeconds: Long = 600,
+    val rules: List<ProxyRule>,
+)
+
 private val json = Json { ignoreUnknownKeys = true }
 
-fun loadConfig(path: String): List<ProxyRule> {
+fun loadConfig(path: String): ProxyConfig {
     val text = SystemFileSystem.source(Path(path)).buffered().use { it.readString() }
-    return json.decodeFromString<List<ProxyRule>>(text)
+    return json.decodeFromString<ProxyConfig>(text)
 }

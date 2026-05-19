@@ -4,6 +4,7 @@ import com.hiczp.openai.responses.stream.proxy.ResponsesApiProxy.Companion.error
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.engine.*
+import io.ktor.client.plugins.*
 import io.ktor.client.plugins.sse.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -30,13 +31,21 @@ private val logger = KotlinLogging.logger {}
  *   Consumers provide a platform-specific engine (e.g. `CIO`, `OkHttp`).
  * @param upstreamBaseUrl the base URL of the upstream OpenAI-compatible server
  *   (e.g. `https://api.openai.com`). Must not end with a trailing slash.
+ * @param timeoutMillis timeout in milliseconds for upstream requests.
+ *   Defaults to 10 minutes (600 000 ms).
  */
 class ResponsesApiProxy(
     val engine: HttpClientEngine,
     val upstreamBaseUrl: String,
+    timeoutMillis: Long = 600_000L,
 ) {
     private val client = HttpClient(engine) {
         install(SSE)
+        install(HttpTimeout) {
+            this.requestTimeoutMillis = timeoutMillis
+            this.connectTimeoutMillis = 10_000
+            this.socketTimeoutMillis = timeoutMillis
+        }
     }
 
     /**
@@ -124,8 +133,8 @@ class ResponsesApiProxy(
         bodyJson: JsonObject,
     ): OutgoingContent? {
         val rewrittenBody = JsonObject(bodyJson + ("stream" to JsonPrimitive(true)))
-        val forwardHeaders = headers.filter { key, _ ->
-            !key.equals(HttpHeaders.Host, ignoreCase = true)
+        val forwardHeaders = stripHopByHopHeaders(headers).filter { key, _ ->
+            !key.equals(HttpHeaders.ContentType, ignoreCase = true)
         }
 
         val accumulator = ResponseAccumulator()
@@ -217,9 +226,7 @@ class ResponsesApiProxy(
         headers: Headers,
         body: ByteReadChannel,
     ): OutgoingContent? {
-        val forwardHeaders = headers.filter { key, _ ->
-            !key.equals(HttpHeaders.Host, ignoreCase = true)
-        }
+        val forwardHeaders = stripHopByHopHeaders(headers)
 
         val upstreamResponse = try {
             client.request(upstreamUrl) {
@@ -251,6 +258,31 @@ class ResponsesApiProxy(
         headers: Headers,
         bodyBytes: ByteArray,
     ): OutgoingContent? = passthrough(upstreamUrl, method, headers, ByteReadChannel(bodyBytes))
+
+    private val hopByHopHeaderNames = setOf(
+        "host",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "upgrade",
+    )
+
+    private fun stripHopByHopHeaders(headers: Headers): StringValues {
+        val connectionHeaders = headers[HttpHeaders.Connection]
+            ?.split(",")
+            ?.map { it.trim().lowercase() }
+            ?.toSet()
+            ?: emptySet()
+
+        return headers.filter { key, _ ->
+            key.lowercase() !in hopByHopHeaderNames && key.lowercase() !in connectionHeaders
+        }
+    }
 
     private fun resolveStatusCode(
         terminalType: ResponseAccumulator.TerminalType,
