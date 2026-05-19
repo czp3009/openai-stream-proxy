@@ -23,6 +23,7 @@ import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import io.ktor.server.cio.CIO as ServerCIO
 
+//TODO uniform logger name on all platforms
 private val logger = KotlinLogging.logger("ProxyCLI")
 private val timeSource = TimeSource.Monotonic
 internal val RequestStartMarkKey = AttributeKey<TimeMark>("RequestStartMark")
@@ -55,6 +56,7 @@ fun main(args: Array<String>) {
     val engine = CIO.create()
     val timeoutSeconds = config.timeoutSeconds
 
+    //TODO single ktor server instance listen on multi ports
     val servers = rules.map { rule ->
         val proxy = ResponsesApiProxy(engine, rule.upstreamUrl, timeoutMillis = timeoutSeconds * 1000)
         logger.info { "Rule: port=${rule.listenPort} -> ${rule.upstreamUrl}" }
@@ -66,7 +68,10 @@ fun main(args: Array<String>) {
 
     registerShutdownHook {
         logger.info { "Shutting down ${servers.size} server(s)..." }
-        servers.forEach { it.stop(2_000L, 5_000L) }
+        rules.zip(servers).forEach { (rule, server) ->
+            server.stop(2_000L, 5_000L)
+            logger.info { "Stopped server on port ${rule.listenPort}" }
+        }
     }
 
     runBlocking { awaitCancellation() }
