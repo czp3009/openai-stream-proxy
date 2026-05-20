@@ -3,7 +3,6 @@ package com.hiczp.openai.responses.stream.proxy.cli
 import com.hiczp.openai.responses.stream.proxy.ResponsesApiProxy
 import com.hiczp.openai.responses.stream.proxy.ResponsesApiProxy.Companion.errorResponse
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.client.engine.cio.*
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -46,7 +45,7 @@ fun main(args: Array<String>) {
         logger.error { "Invalid config file: $configFile" }
         throw e
     }
-    val clientEngine = CIO.create()
+    val clientEngine = createClientEngine()
     val proxies = config.rules.associate { rule ->
         rule.listenPort to ResponsesApiProxy(
             engine = clientEngine,

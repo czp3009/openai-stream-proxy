@@ -44,13 +44,16 @@ kotlin {
             implementation(libs.ktor.server.core)
             implementation(libs.ktor.server.cio)
             implementation(libs.ktor.server.status.pages)
-            implementation(libs.ktor.client.cio)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.cli)
             implementation(libs.kotlin.logging)
         }
         jvmMain.dependencies {
+            implementation(libs.ktor.client.cio)
             implementation(libs.logback.classic)
+        }
+        nativeMain.dependencies {
+            implementation(libs.ktor.client.curl)
         }
         jvmTest.dependencies {
             implementation(kotlin("test"))
