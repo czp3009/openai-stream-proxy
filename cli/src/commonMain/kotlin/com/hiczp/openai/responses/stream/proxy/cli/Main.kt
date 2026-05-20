@@ -17,7 +17,7 @@ import kotlinx.cli.ArgParser.OptionPrefixStyle
 import kotlinx.cli.ArgType
 import kotlinx.cli.default
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlin.time.DurationUnit
 import kotlin.time.TimeMark
@@ -85,12 +85,14 @@ fun main(args: Array<String>) {
         exitProcess(1)
     }
 
-    registerShutdownHook {
+    val shutdownRequest = CompletableDeferred<Unit>()
+    registerShutdownHook { shutdownRequest.complete(Unit) }
+
+    runBlocking {
+        shutdownRequest.await()
         logger.info { "Shutting down server..." }
         server.stop(2_000L, 5_000L)
     }
-
-    runBlocking { awaitCancellation() }
 }
 
 internal fun Application.configureProxyServer(proxies: Map<Int, ResponsesApiProxy>) {
