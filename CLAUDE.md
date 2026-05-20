@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 
 ```bash
 ./gradlew build
-./gradlew :sniffer:run
-./gradlew :mock-client:run
 ```
 
 ## Running for Testing
@@ -27,14 +25,17 @@ Current run configurations and their expected environment variables:
   `--config-file`)
 - **sniffer [jvm]** — `UPSTREAM_BASE_URL` (optional, default `https://api.openai.com`), `LISTEN_PORT` (optional, default
   `8080`)
-- **mock-client [jvm] stream** / **mock-client [jvm] non-stream** — `OPENAI_API_KEY` (required), `OPENAI_BASE_URL`,
+- **mock-client-responses [jvm] stream** / **mock-client-responses [jvm] non-stream** — `OPENAI_API_KEY` (required),
+  `OPENAI_BASE_URL`,
   `OPENAI_MODEL`, `OPENAI_PROMPT` (optional)
-- **openai-responses-stream-proxy-0.0.1[mingwX64/linuxX64/macosArm64]** — native CLI binaries; same config-file argument
+- **mock-client-chat-completions [jvm] stream** / **mock-client-chat-completions [jvm] non-stream** — same environment
+  variables as mock-client-responses
+- **openai-stream-proxy-0.0.1[mingwX64/linuxX64/macosArm64]** — native CLI binaries; same config-file argument
   as JVM
 
 ## Project Architecture
 
-Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Ktor `3.4.3`.
+Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Ktor `3.5.0`.
 
 ### Subprojects
 
@@ -69,14 +70,17 @@ Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Kto
 
 - **sniffer** - JVM-only development tool for analyzing OpenAI API traffic. A reverse proxy
   (`ReverseProxy`) that buffers entire request/response bodies and logs headers and bodies both to
-  stdout (via `TrafficLogger` + `kotlin-logging`) and to `temp/sniffer.txt`. Uses Ktor CIO client
-  and server. Configured via environment variables: `UPSTREAM_BASE_URL` (default `https://api.openai.com`)
-  and `LISTEN_PORT` (default `8080`).
-- **mock-client** - JVM-only development tool using the official `openai-java` SDK (`OpenAIOkHttpClient`).
-  Works with `sniffer`, `cli`, or any OpenAI-compatible proxy for data collection and testing.
+  stdout (via `TrafficLogger` + `kotlin-logging`) and to per-path files: requests ending with
+  `/responses` go to `temp/responses.txt`, `/chat/completions` to `temp/chat_completions.txt`,
+  others to `temp/others.txt`. Uses Ktor CIO client and server. Configured via environment variables:
+  `UPSTREAM_BASE_URL` (default `https://api.openai.com`) and `LISTEN_PORT` (default `8080`).
+- **mock-client-responses** - JVM-only development tool using the official `openai-java` SDK (`OpenAIOkHttpClient`).
+  Tests the Responses API. Works with `sniffer`, `cli`, or any OpenAI-compatible proxy.
   Supports streaming (`createStreaming`) and non-streaming (`create`) modes. Requires `OPENAI_API_KEY`.
   Also configurable via `OPENAI_BASE_URL` (default `http://localhost:8080/v1`), `OPENAI_MODEL`
   (default `gpt-5.3-codex`), `OPENAI_PROMPT` (default `"Hello"`), and `OPENAI_STREAM` (default `false`).
+- **mock-client-chat-completions** - Same as `mock-client-responses` but uses the Chat Completions API
+  (`client.chat().completions()`). Same environment variables and defaults.
 
 ### Key Patterns
 
@@ -91,7 +95,8 @@ Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Kto
   `registerShutdownHook()` (JVM uses `Runtime.addShutdownHook`; native uses POSIX `signal`).
 - `proxy` targets JVM, mingwX64, linuxX64, linuxArm64, and macosArm64.
 - `cli` targets JVM, mingwX64, linuxX64, and macosArm64 (no linuxArm64).
-- `sniffer` and `mock-client` are JVM executables with code in `commonMain` and `mainClass.set(...)` in the JVM block.
+- `sniffer`, `mock-client-responses`, and `mock-client-chat-completions` are JVM executables with code in `commonMain`
+  and `mainClass.set(...)` in the JVM block.
 - Test SSE fixtures are in `commonTest/resources` under each module's package path.
 - Tests use real Ktor CIO servers on ephemeral ports (`ServerSocket(0)`) — no mocks.
 - `proxy` tests additionally use the `openai-java` SDK as the downstream client for end-to-end verification.

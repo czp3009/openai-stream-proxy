@@ -7,8 +7,8 @@ plugins {
     alias(libs.plugins.shadow)
 }
 
-val nativeEntryPoint = "com.hiczp.openai.responses.stream.proxy.cli.main"
-val jvmMainClass = "com.hiczp.openai.responses.stream.proxy.cli.MainKt"
+val nativeEntryPoint = "com.hiczp.openai.stream.proxy.cli.main"
+val jvmMainClass = "com.hiczp.openai.stream.proxy.cli.MainKt"
 
 kotlin {
     jvm {

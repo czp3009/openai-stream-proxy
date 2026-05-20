@@ -1,4 +1,4 @@
-rootProject.name = "openai-responses-stream-proxy"
+rootProject.name = "openai-stream-proxy"
 
 pluginManagement {
     repositories {
@@ -19,4 +19,5 @@ dependencyResolutionManagement {
 include(":proxy")
 include(":cli")
 include(":sniffer")
-include(":mock-client")
+include(":mock-client-responses")
+include(":mock-client-chat-completions")
