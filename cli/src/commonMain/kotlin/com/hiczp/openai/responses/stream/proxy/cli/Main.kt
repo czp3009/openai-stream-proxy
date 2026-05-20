@@ -24,7 +24,7 @@ import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import io.ktor.server.cio.CIO as ServerCIO
 
-private val logger = KotlinLogging.logger("com.hiczp.openai.responses.stream.proxy.CLI")
+private val logger = KotlinLogging.logger("com.hiczp.openai.responses.stream.proxy.cli.Application")
 private val timeSource = TimeSource.Monotonic
 internal val RequestStartMarkKey = AttributeKey<TimeMark>("RequestStartMark")
 

@@ -4,7 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.sse.*
 import kotlinx.serialization.json.*
 
-private val logger = KotlinLogging.logger {}
+private val logger = KotlinLogging.logger("com.hiczp.openai.responses.stream.proxy.ResponseAccumulator")
 
 /**
  * Accumulates SSE events from an OpenAI Responses API streaming response into a single
