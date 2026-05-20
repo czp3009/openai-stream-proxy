@@ -16,6 +16,7 @@ import kotlinx.cli.ArgParser
 import kotlinx.cli.ArgParser.OptionPrefixStyle
 import kotlinx.cli.ArgType
 import kotlinx.cli.default
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlin.time.DurationUnit
@@ -62,14 +63,27 @@ fun main(args: Array<String>) {
         logger.info { "Proxy: port=$port -> ${proxy.upstreamBaseUrl}" }
     }
 
-    val server = embeddedServer(
-        ServerCIO,
-        configure = {
-            proxies.keys.forEach { listenPort -> connector { port = listenPort } }
+    val server = try {
+        embeddedServer(
+            ServerCIO,
+            configure = {
+                proxies.keys.forEach { listenPort -> connector { port = listenPort } }
+            }
+        ) {
+            configureProxyServer(proxies)
+        }.start()
+    } catch (e: Exception) {
+        tailrec fun unwrapRootCause(e: Throwable): Throwable {
+            val cause = e.cause ?: return e
+            if (cause === e) return e
+            if (e !is CancellationException) return e
+            return unwrapRootCause(cause)
         }
-    ) {
-        configureProxyServer(proxies)
-    }.start()
+
+        val message = unwrapRootCause(e).message ?: e.message
+        logger.error { "Failed to start server: $message" }
+        exitProcess(1)
+    }
 
     registerShutdownHook {
         logger.info { "Shutting down server..." }
