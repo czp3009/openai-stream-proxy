@@ -6,5 +6,8 @@ import org.slf4j.LoggerFactory
 import ch.qos.logback.classic.Logger as LogbackLogger
 
 actual fun configureLogging() {
-    (LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as LogbackLogger).level = Level.INFO
+    val level = System.getenv("LOG_LEVEL")?.uppercase()?.let {
+        Level.toLevel(it, Level.INFO)
+    } ?: Level.INFO
+    (LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as LogbackLogger).level = level
 }
