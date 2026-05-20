@@ -112,7 +112,7 @@ internal fun Application.configureProxyServer(proxies: Map<Int, ResponsesApiProx
                 val path = uri.substringBefore('?').trimEnd('/')
                 val upstreamUrl = proxy.upstreamBaseUrl.trimEnd('/') + uri
 
-                logger.info { "Request [${call.request.host()}:${call.request.port()} -> ${proxy.upstreamBaseUrl}] ${method.value} $uri" }
+                logger.info { "Request [${call.request.host()}:${call.request.port()} -> ${upstreamUrl}] ${method.value} $uri" }
 
                 val result = if (method != HttpMethod.Post
                     || !path.endsWith("/responses")
@@ -136,7 +136,7 @@ internal fun Application.configureProxyServer(proxies: Map<Int, ResponsesApiProx
                     errorResponse.status
                 }
                 val elapsed = startMark.elapsedNow().toInt(DurationUnit.MILLISECONDS)
-                logger.info { "${method.value} $uri ${statusCode?.value ?: "<UnknownStatus>"} (${elapsed}ms)" }
+                logger.info { "Request completed: ${method.value} $upstreamUrl ${statusCode?.value ?: "<UnknownStatus>"} (${elapsed}ms)" }
             }
         }
     }
