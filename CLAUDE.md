@@ -2,13 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working in this repository.
 
-## Build Commands
+## Build & Test
 
 ```bash
-./gradlew build
+./gradlew build                              # build all modules
+./gradlew :proxy:jvmTest                     # proxy tests only
+./gradlew :cli:jvmTest                       # cli tests only
+./gradlew test                               # all tests
 ```
 
-## Running for Testing
+JVM toolchain: 21. Kotlin `2.3.21`, Ktor `3.5.0`.
+
+## Running Modules
 
 Modules require environment variables that are configured in IDEA run configurations. When running any module,
 **always use IDEA MCP to execute the IDEA run configuration** (`mcp__idea__execute_run_configuration`). Never run
@@ -35,7 +40,7 @@ Current run configurations and their expected environment variables:
 
 ## Project Architecture
 
-Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Ktor `3.5.0`.
+Kotlin Multiplatform project using Gradle version catalogs.
 
 ### Subprojects
 
@@ -53,6 +58,9 @@ Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Kto
   exceptions signal proxy bugs (caller should map to 500). Depends on `ktor-client-core`, `ktor-http`,
   `ktor-io`, `kotlinx-serialization-json`, and `kotlin-logging`. No platform-specific engines;
   consumers provide the engine.
+  Also contains `ChatCompletionsAccumulator`, which merges streamed Chat Completions SSE deltas
+  (delta content, tool calls, usage, extensions) into a single non-streaming JSON response.
+  Not yet wired into `ResponsesApiProxy` — currently a standalone utility.
 - **cli** - CLI wrapper for `proxy`. Reads a JSON config file (via `--config-file`, default `config.json`)
   with the structure `{"timeoutSeconds": 600, "rules": [{"listenPort": 8080, "upstreamUrl": "..."}]}`,
   starts one Ktor CIO server per config rule (each listening on a different port). All requests are
@@ -89,7 +97,8 @@ Kotlin Multiplatform project using Gradle version catalogs. Kotlin `2.3.21`, Kto
 - Requests with `stream=true` are not converted and must be passed through unchanged.
 - For the supported conversion path, `proxy` aggregates the final `Response` state in memory and only then writes
   the downstream non-streaming JSON response. It does not stream partial JSON fragments downstream.
-- `ResponseAccumulator` is not thread-safe — `accumulate()` must be called from a single coroutine.
+- `ResponseAccumulator` and `ChatCompletionsAccumulator` are not thread-safe — `accumulate()` must be called from a
+  single coroutine.
 - `cli` uses CIO engine everywhere (client and server), no HTTPS support.
 - `cli` uses `expect/actual` for `configureLogging()` (JVM sets logback to INFO; native is no-op) and
   `registerShutdownHook()` (JVM uses `Runtime.addShutdownHook`; native uses POSIX `signal`).
