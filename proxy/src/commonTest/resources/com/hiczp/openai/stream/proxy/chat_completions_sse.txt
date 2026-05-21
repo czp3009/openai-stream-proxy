@@ -1,0 +1,9 @@
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","system_fingerprint":"fp_abc","usage":null,"provider_top":{"first":true},"choices":[{"index":0,"delta":{"role":"assistant","content":"Hel","debug_tokens":1,"vendor":{"trace":"a"}},"logprobs":null,"finish_reason":null,"provider_choice":{"note":"choice-extension"}}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"lo","debug_tokens":2,"function_call":{"name":"lookup_weather","arguments":"{\"city\""},"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{\"location\""}}]},"logprobs":{"content":[{"token":"Hello","logprob":-0.1,"bytes":[72,101],"top_logprobs":[]}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"!","function_call":{"arguments":":\"Boston\"}"},"tool_calls":[{"index":0,"function":{"arguments":":\"Boston, MA\"}"}}]},"logprobs":{"content":[{"token":"!","logprob":-0.2,"bytes":[33],"top_logprobs":[]}]},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o-mini","service_tier":"default","provider_top":{"second":true},"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":32,"total_tokens":42}}
+
+data: [DONE]

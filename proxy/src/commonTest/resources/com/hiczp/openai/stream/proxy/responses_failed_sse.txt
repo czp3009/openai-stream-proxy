@@ -1,0 +1,7 @@
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_failed","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"failed partial output","annotations":[]}]},"sequence_number":1}
+
+event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_failed","object":"response","status":"failed","error":{"code":"server_error","message":"upstream failed"},"output":[]},"sequence_number":2}
+
+: end

@@ -1,0 +1,7 @@
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_incomplete","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"incomplete partial output","annotations":[]}]},"sequence_number":1}
+
+event: response.incomplete
+data: {"type":"response.incomplete","response":{"id":"resp_incomplete","object":"response","status":"incomplete","error":null,"incomplete_details":{"reason":"max_output_tokens"},"output":[]},"sequence_number":2}
+
+: end
