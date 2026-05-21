@@ -17,9 +17,7 @@ import io.ktor.server.routing.*
 import kotlinx.coroutines.runBlocking
 import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
+import kotlin.test.*
 import io.ktor.server.cio.CIO as ServerCIO
 
 class ProxyTest {
@@ -325,6 +323,116 @@ class ProxyTest {
             }
             assertEquals(200, response.status.value)
             assertEquals("/v1/responses?key=value", capturedUri.get())
+        } finally {
+            downstreamServer.stop()
+            upstreamServer.stop()
+        }
+    }
+
+    @Test
+    fun `openai SDK User-Agent is forwarded to upstream in convert flow`() = runBlocking {
+        val upstreamPort = findFreePort()
+        val downstreamPort = findFreePort()
+        val capturedUserAgent = AtomicReference<String>()
+
+        val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
+            routing {
+                post("/v1/responses") {
+                    capturedUserAgent.set(call.request.headers["User-Agent"])
+                    call.respond(object : OutgoingContent.ByteArrayContent() {
+                        override val contentType = ContentType("text", "event-stream")
+                        override fun bytes(): ByteArray = sseResponseText
+                    })
+                }
+            }
+        }.start()
+
+        val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
+
+        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+            routing { proxyHandler(proxy) }
+        }.start()
+
+        try {
+            val openaiClient = OpenAIOkHttpClient.builder()
+                .apiKey("test-key")
+                .baseUrl("http://127.0.0.1:$downstreamPort/v1")
+                .build()
+
+            val message = EasyInputMessage.builder()
+                .role(EasyInputMessage.Role.USER)
+                .content("Hello")
+                .build()
+
+            val params = ResponseCreateParams.builder()
+                .inputOfResponse(listOf(ResponseInputItem.ofEasyInputMessage(message)))
+                .model("gpt-5.3-codex")
+                .build()
+
+            openaiClient.responses().create(params)
+
+            val ua = capturedUserAgent.get()
+            assertNotNull(ua, "Upstream should receive a User-Agent header")
+            assertTrue(
+                ua.contains("OpenAI"),
+                "Expected User-Agent to contain 'OpenAI' (SDK UA), but got: $ua"
+            )
+        } finally {
+            downstreamServer.stop()
+            upstreamServer.stop()
+        }
+    }
+
+    @Test
+    fun `openai SDK User-Agent is forwarded to upstream in passthrough flow`() = runBlocking {
+        val upstreamPort = findFreePort()
+        val downstreamPort = findFreePort()
+        val capturedUserAgent = AtomicReference<String>()
+
+        val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
+            routing {
+                post("/v1/responses") {
+                    capturedUserAgent.set(call.request.headers["User-Agent"])
+                    call.respond(object : OutgoingContent.ByteArrayContent() {
+                        override val contentType = ContentType("text", "event-stream")
+                        override fun bytes() = sseResponseText
+                    })
+                }
+            }
+        }.start()
+
+        val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
+
+        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+            routing { proxyHandler(proxy) }
+        }.start()
+
+        try {
+            val openaiClient = OpenAIOkHttpClient.builder()
+                .apiKey("test-key")
+                .baseUrl("http://127.0.0.1:$downstreamPort/v1")
+                .build()
+
+            val message = EasyInputMessage.builder()
+                .role(EasyInputMessage.Role.USER)
+                .content("Hello")
+                .build()
+
+            val params = ResponseCreateParams.builder()
+                .inputOfResponse(listOf(ResponseInputItem.ofEasyInputMessage(message)))
+                .model("gpt-5.3-codex")
+                .build()
+
+            openaiClient.responses().createStreaming(params).use { streamResponse ->
+                streamResponse.stream().forEach { }
+            }
+
+            val ua = capturedUserAgent.get()
+            assertNotNull(ua, "Upstream should receive a User-Agent header")
+            assertTrue(
+                ua.contains("OpenAI"),
+                "Expected User-Agent to contain 'OpenAI' (SDK UA), but got: $ua"
+            )
         } finally {
             downstreamServer.stop()
             upstreamServer.stop()
