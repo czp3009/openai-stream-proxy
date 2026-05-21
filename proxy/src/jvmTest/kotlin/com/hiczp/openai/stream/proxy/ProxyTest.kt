@@ -92,7 +92,7 @@ class ProxyTest {
                 )
             } catch (e: Exception) {
                 return@post call.respond(
-                    ResponsesApiProxy.errorResponse(
+                    OpenAiErrors.errorResponse(
                         e.message ?: "Unknown error",
                         "proxy_error",
                         status = HttpStatusCode.InternalServerError,
@@ -103,7 +103,7 @@ class ProxyTest {
                 call.respond(result)
             } else {
                 call.respond(
-                    ResponsesApiProxy.errorResponse("Upstream returned incomplete response", "upstream_error")
+                    OpenAiErrors.errorResponse("Upstream returned incomplete response", "upstream_error")
                 )
             }
         }

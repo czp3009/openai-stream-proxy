@@ -1,5 +1,6 @@
 package com.hiczp.openai.stream.proxy.cli
 
+import com.hiczp.openai.stream.proxy.OpenAiErrors
 import com.hiczp.openai.stream.proxy.ResponsesApiProxy
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
@@ -58,7 +59,7 @@ class ServerTest {
                             call.respond(result)
                         } else {
                             call.respond(
-                                ResponsesApiProxy.errorResponse(
+                                OpenAiErrors.errorResponse(
                                     message = "Upstream returned incomplete or invalid response",
                                     type = "upstream_error",
                                 )
@@ -124,7 +125,7 @@ class ServerTest {
                             call.respond(result)
                         } else {
                             call.respond(
-                                ResponsesApiProxy.errorResponse(
+                                OpenAiErrors.errorResponse(
                                     message = "Upstream returned incomplete or invalid response",
                                     type = "upstream_error",
                                 )
@@ -173,7 +174,7 @@ class ServerTest {
                             call.respond(result)
                         } else {
                             call.respond(
-                                ResponsesApiProxy.errorResponse(
+                                OpenAiErrors.errorResponse(
                                     message = "Upstream returned incomplete or invalid response",
                                     type = "upstream_error",
                                 )

@@ -7,7 +7,7 @@ import ch.qos.logback.classic.Logger as LogbackLogger
 
 actual fun configureLogging() {
     val level = System.getenv("LOG_LEVEL")?.uppercase()?.let {
-        Level.toLevel(it, Level.INFO)
-    } ?: Level.INFO
+        Level.toLevel(it, Level.DEBUG)
+    } ?: Level.DEBUG
     (LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as LogbackLogger).level = level
 }

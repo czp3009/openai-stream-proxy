@@ -10,6 +10,6 @@ import platform.posix.getenv
 actual fun configureLogging() {
     val level = getenv("LOG_LEVEL")?.toKString()?.uppercase()?.let {
         runCatching { Level.valueOf(it) }.getOrNull()
-    } ?: Level.INFO
+    } ?: Level.DEBUG
     KotlinLoggingConfiguration.direct.logLevel = level
 }

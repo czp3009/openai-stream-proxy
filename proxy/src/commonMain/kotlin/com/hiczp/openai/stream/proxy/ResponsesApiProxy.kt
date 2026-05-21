@@ -1,6 +1,5 @@
 package com.hiczp.openai.stream.proxy
 
-import com.hiczp.openai.stream.proxy.ResponsesApiProxy.Companion.errorResponse
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.engine.*
@@ -119,7 +118,7 @@ class ResponsesApiProxy(
         val contentType = requestHeaders[HttpHeaders.ContentType]
             ?.let { runCatching { ContentType.parse(it) }.getOrNull() }
         if (contentType?.match(ContentType.Application.Json) != true) {
-            logger.debug { "Passthrough: ${requestMethod.value} $requestUri (non-JSON)" }
+            logger.debug { "Passthrough: ${requestMethod.value} $requestUri (non-JSON request)" }
             return passthrough(upstreamUrl, requestMethod, requestHeaders, requestBody)
         }
 
@@ -142,11 +141,11 @@ class ResponsesApiProxy(
             return passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes)
         }
 
-        logger.info { "Proxy flow: ${requestMethod.value} $requestUri" }
+        logger.debug { "Proxy flow: ${requestMethod.value} $requestUri" }
         return convert(upstreamUrl, requestHeaders, bodyJson)
     }
 
-    suspend fun convert(
+    private suspend fun convert(
         upstreamUrl: String,
         headers: Headers,
         bodyJson: JsonObject,
@@ -176,7 +175,7 @@ class ResponsesApiProxy(
                 //SSE stream isn't started
                 if (response != null) {
                     //the server responds, but not SSE or status code not 200
-                    logger.info { "Server returned non-SSE response with status ${response.status}" }
+                    logger.warn { "Server returned non-SSE response with status ${response.status}" }
                     val filteredHeaders = response.headers.filter { key, _ ->
                         !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true)
                     }
@@ -228,7 +227,7 @@ class ResponsesApiProxy(
             val type = failedError["type"]?.jsonPrimitive?.contentOrNull
                 ?: failedErrorCode?.let(::mapFailedErrorType)
                 ?: "upstream_error"
-            errorResponseBody(
+            OpenAiErrors.errorResponseBody(
                 message = failedError["message"]?.jsonPrimitive?.contentOrNull ?: "Upstream response failed",
                 type = type,
                 param = failedError["param"]?.jsonPrimitive?.contentOrNull ?: "",
@@ -248,7 +247,7 @@ class ResponsesApiProxy(
             }
         }
 
-        logger.info { "Completed: $upstreamUrl → $statusCode ($terminalType)" }
+        logger.debug { "Convert completed: $upstreamUrl -> $statusCode ($terminalType)" }
         return object : OutgoingContent.ByteArrayContent() {
             override val contentLength = responseBytes.size.toLong()
             override val status = statusCode
@@ -257,7 +256,7 @@ class ResponsesApiProxy(
         }
     }
 
-    suspend fun passthrough(
+    private suspend fun passthrough(
         upstreamUrl: String,
         method: HttpMethod,
         headers: Headers,
@@ -289,7 +288,7 @@ class ResponsesApiProxy(
         }
     }
 
-    suspend fun passthrough(
+    private suspend fun passthrough(
         upstreamUrl: String,
         method: HttpMethod,
         headers: Headers,
@@ -377,69 +376,4 @@ class ResponsesApiProxy(
         "failed_to_download_image",
         "image_file_not_found",
     )
-
-    companion object {
-        /**
-         * Builds the JSON body bytes for an OpenAI-compatible error envelope.
-         *
-         * @param message the human-readable error message (placed in `error.message`).
-         * @param type the error type (placed in `error.type`).
-         * @param param the error param (placed in `error.param`). Defaults to `""`.
-         * @param code the error code (placed in `error.code`). Defaults to [type].
-         * @return a JSON byte array with an OpenAI error envelope.
-         */
-        fun errorResponseBody(
-            message: String,
-            type: String,
-            param: String = "",
-            code: String = type,
-        ): ByteArray {
-            val body = JsonObject(
-                mapOf(
-                    "error" to JsonObject(
-                        mapOf(
-                            "message" to JsonPrimitive(message),
-                            "type" to JsonPrimitive(type),
-                            "param" to JsonPrimitive(param),
-                            "code" to JsonPrimitive(code),
-                        )
-                    )
-                )
-            )
-            return body.toString().encodeToByteArray()
-        }
-
-        /**
-         * Builds an OpenAI-compatible error response.
-         *
-         * For example, callers can use this when [proxy] returns `null` (e.g. HTTP 502 Bad Gateway)
-         * or throws an exception (e.g. HTTP 500 Internal Server Error).
-         *
-         * @param message the human-readable error message (placed in `error.message`).
-         * @param type the error type (placed in `error.type`).
-         * @param param the error param (placed in `error.param`). Defaults to `""`.
-         * @param code the error code (placed in `error.code`). Defaults to [type].
-         * @param status the HTTP status code for the response. Defaults to `502 Bad Gateway`.
-         * @return a [ByteArrayContent] with content type `application/json`
-         *   and an error object following the OpenAI error envelope format.
-         */
-        fun errorResponse(
-            message: String,
-            type: String,
-            param: String = "",
-            code: String = type,
-            status: HttpStatusCode = HttpStatusCode.BadGateway,
-        ): ByteArrayContent {
-            return ByteArrayContent(
-                bytes = errorResponseBody(
-                    message = message,
-                    type = type,
-                    param = param,
-                    code = code,
-                ),
-                contentType = ContentType.Application.Json,
-                status = status,
-            )
-        }
-    }
 }

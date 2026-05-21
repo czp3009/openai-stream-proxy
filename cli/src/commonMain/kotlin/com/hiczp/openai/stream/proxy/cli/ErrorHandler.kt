@@ -1,6 +1,6 @@
 package com.hiczp.openai.stream.proxy.cli
 
-import com.hiczp.openai.stream.proxy.ResponsesApiProxy
+import com.hiczp.openai.stream.proxy.OpenAiErrors
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -27,7 +27,7 @@ fun Application.installErrorHandler() {
                 }
             }
             logger.error { "Internal server error: ${throwable.message}" }
-            val errorResponse = ResponsesApiProxy.errorResponse(
+            val errorResponse = OpenAiErrors.errorResponse(
                 message = throwable.message ?: "Proxy internal error",
                 type = "internal_error",
                 status = HttpStatusCode.InternalServerError,
