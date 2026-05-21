@@ -75,7 +75,7 @@ class ResponsesApiProxy(
      * exceptions and return an error response to the downstream client (e.g. via
      * [OpenAiErrors.errorResponse]).
      */
-    suspend fun proxy(
+    override suspend fun proxy(
         requestMethod: HttpMethod,
         requestUri: String,
         requestHeaders: Headers,

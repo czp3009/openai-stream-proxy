@@ -29,6 +29,13 @@ abstract class AbstractApiProxy(
         }
     }
 
+    abstract suspend fun proxy(
+        requestMethod: HttpMethod,
+        requestUri: String,
+        requestHeaders: Headers,
+        requestBody: ByteReadChannel,
+    ): OutgoingContent?
+
     protected suspend fun passthrough(
         upstreamUrl: String,
         method: HttpMethod,
