@@ -1,9 +1,7 @@
 package com.hiczp.openai.stream.proxy
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.client.*
 import io.ktor.client.engine.*
-import io.ktor.client.plugins.*
 import io.ktor.client.plugins.sse.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -36,28 +34,12 @@ private val logger = KotlinLogging.logger("com.hiczp.openai.stream.proxy.Respons
  * Requests that do not match the conversion criteria (non-POST method, non-`/responses` path,
  * non-JSON content type, missing `model` field, or `stream=true`) are forwarded to the
  * upstream unchanged (passthrough).
- *
- * @param engine the [HttpClientEngine] used for outbound HTTP requests.
- *   Consumers provide a platform-specific engine (e.g. `CIO`, `OkHttp`).
- * @param upstreamBaseUrl the base URL of the upstream OpenAI-compatible server
- *   (e.g. `https://api.openai.com`). A trailing slash is ignored.
- * @param timeoutMillis timeout in milliseconds for upstream requests.
- *   Defaults to 10 minutes (600 000 ms).
  */
 class ResponsesApiProxy(
-    val engine: HttpClientEngine,
-    val upstreamBaseUrl: String,
+    engine: HttpClientEngine,
+    upstreamBaseUrl: String,
     timeoutMillis: Long = 600_000L,
-) {
-    private val client = HttpClient(engine) {
-        install(SSE)
-        install(HttpTimeout) {
-            this.requestTimeoutMillis = timeoutMillis
-            this.connectTimeoutMillis = 10_000
-            this.socketTimeoutMillis = timeoutMillis
-        }
-    }
-
+) : AbstractApiProxy(engine, upstreamBaseUrl, timeoutMillis) {
     /**
      * Proxies a single downstream request to the upstream server.
      *
@@ -90,16 +72,8 @@ class ResponsesApiProxy(
      *
      * This method throws an exception only for unexpected non-network failures while processing the
      * proxy flow (e.g. malformed upstream event data or bugs). The caller should catch such
-     * exceptions and return an error response to the downstream client (e.g. via [errorResponse]).
-     *
-     * @param requestMethod the HTTP method of the incoming request.
-     * @param requestUri the request URI (path and query string) relative to the proxy root.
-     * @param requestHeaders the incoming request headers.
-     * @param requestBody the incoming request body.
-     * @return an [OutgoingContent] to send downstream, or `null` if no relayable upstream response
-     *   and no terminal stream result could be produced.
-     * @throws Exception for unexpected non-network failures that the caller should translate into
-     *   an error response for the downstream client.
+     * exceptions and return an error response to the downstream client (e.g. via
+     * [OpenAiErrors.errorResponse]).
      */
     suspend fun proxy(
         requestMethod: HttpMethod,
@@ -253,70 +227,6 @@ class ResponsesApiProxy(
             override val status = statusCode
             override val headers = responseHeaders
             override fun bytes() = responseBytes
-        }
-    }
-
-    private suspend fun passthrough(
-        upstreamUrl: String,
-        method: HttpMethod,
-        headers: Headers,
-        body: ByteReadChannel,
-    ): OutgoingContent? {
-        val forwardHeaders = stripHopByHopHeaders(headers)
-
-        val upstreamResponse = try {
-            client.request(upstreamUrl) {
-                this.method = method
-                this.headers.appendAll(forwardHeaders)
-                this.setBody(body)
-            }
-        } catch (e: IOException) {
-            logger.warn { "Passthrough request to $upstreamUrl failed: ${e.message}" }
-            return null
-        }
-
-        val filteredHeaders = upstreamResponse.headers.filter { key, _ ->
-            !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true)
-        }
-
-        val bodyChannel = upstreamResponse.bodyAsChannel()
-        return object : OutgoingContent.ReadChannelContent() {
-            override val contentLength = upstreamResponse.contentLength()
-            override val status = upstreamResponse.status
-            override val headers = Headers.build { appendAll(filteredHeaders) }
-            override fun readFrom(): ByteReadChannel = bodyChannel
-        }
-    }
-
-    private suspend fun passthrough(
-        upstreamUrl: String,
-        method: HttpMethod,
-        headers: Headers,
-        bodyBytes: ByteArray,
-    ): OutgoingContent? = passthrough(upstreamUrl, method, headers, ByteReadChannel(bodyBytes))
-
-    private val hopByHopHeaderNames = setOf(
-        "host",
-        "content-length",
-        "transfer-encoding",
-        "connection",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailer",
-        "upgrade",
-    )
-
-    private fun stripHopByHopHeaders(headers: Headers): StringValues {
-        val connectionHeaders = headers[HttpHeaders.Connection]
-            ?.split(",")
-            ?.map { it.trim().lowercase() }
-            ?.toSet()
-            ?: emptySet()
-
-        return headers.filter { key, _ ->
-            key.lowercase() !in hopByHopHeaderNames && key.lowercase() !in connectionHeaders
         }
     }
 
