@@ -46,28 +46,35 @@ Kotlin Multiplatform project using Gradle version catalogs.
 
 #### Core
 
-- **proxy** - Core library. `ResponsesApiProxy` handles one protocol conversion path: downstream
-  non-streaming `POST /v1/responses` requests are rewritten to upstream `stream: true`, the upstream
-  SSE is consumed by `ResponseAccumulator` (which collects `response.output_item.done` events and waits
-  for a terminal event: `response.completed`, `response.failed`, or `response.incomplete`), the final
-  `Response` state is assembled in memory, and a non-streaming JSON response is returned downstream.
-  Requests that do not match the conversion criteria (non-POST, non-`/responses` path, non-JSON content type,
-  missing `model` field, or `stream=true`) are passed through unchanged via `passthrough()`.
-  When the upstream returns a non-SSE error response during the SSE connect phase, it is relayed as-is.
-  Returns `OutgoingContent?` — null signals an upstream failure (incomplete stream, network error);
-  exceptions signal proxy bugs (caller should map to 500). Depends on `ktor-client-core`, `ktor-http`,
-  `ktor-io`, `kotlinx-serialization-json`, and `kotlin-logging`. No platform-specific engines;
-  consumers provide the engine.
-  Also contains `ChatCompletionsAccumulator`, which merges streamed Chat Completions SSE deltas
-  (delta content, tool calls, usage, extensions) into a single non-streaming JSON response.
-  Not yet wired into `ResponsesApiProxy` — currently a standalone utility.
+- **proxy** - Core library. `AbstractApiProxy` is the shared base class providing the upstream HTTP
+  client (with SSE and timeout plugins), `passthrough()` for forwarding requests unchanged, and
+  `stripHopByHopHeaders()`. Subclasses implement `proxy()` to define protocol-specific conversion
+  logic. `ResponsesApiProxy` extends `AbstractApiProxy` and handles one protocol conversion path:
+  downstream non-streaming `POST /v1/responses` requests are rewritten to upstream `stream: true`,
+  the upstream SSE is consumed by `ResponseAccumulator` (which collects `response.output_item.done`
+  events and waits for a terminal event: `response.completed`, `response.failed`, or
+  `response.incomplete`), the final `Response` state is assembled in memory, and a non-streaming
+  JSON response is returned downstream.
+  Requests that do not match the conversion criteria (non-POST, non-`/responses` path, non-JSON
+  content type, missing `model` field, or `stream=true`) are passed through unchanged via
+  `passthrough()`.
+  When the upstream returns a non-SSE error response during the SSE connect phase, it is relayed
+  as-is. Returns `OutgoingContent?` — null signals an upstream failure (incomplete stream, network
+  error); exceptions signal proxy bugs (caller should map to 500). Depends on `ktor-client-core`,
+  `ktor-http`, `ktor-io`, `kotlinx-serialization-json`, and `kotlin-logging`. No platform-specific
+  engines; consumers provide the engine.
+  Also contains `OpenAiErrors` (utility for building OpenAI-compatible error responses),
+  `SseAccumulator` (interface for SSE event accumulators),
+  `ChatCompletionsAccumulator` (implements `SseAccumulator`, merges streamed Chat Completions SSE
+  deltas into a single non-streaming JSON response — not yet wired into a proxy),
+  and `ResponseAccumulator` (implements `SseAccumulator`, used by `ResponsesApiProxy`).
 - **cli** - CLI wrapper for `proxy`. Reads a JSON config file (via `--config-file`, default `config.json`)
   with the structure `{"timeoutSeconds": 600, "rules": [{"listenPort": 8080, "upstreamUrl": "..."}]}`,
   starts one Ktor CIO server per config rule (each listening on a different port). All requests are
   handled by a catch-all `route("/{...}")`; POST requests with `/responses` path and JSON content type
   go to `proxy.proxy()` (which internally checks for `model` and `stream=true`), all others go to
   `proxy.passthrough()`. Both return `OutgoingContent?`; null → 502 `upstream_error` (via
-  `ResponsesApiProxy.errorResponse()`), exceptions → 500 `internal_error` via StatusPages
+  `OpenAiErrors.errorResponse()`), exceptions → 500 `internal_error` via StatusPages
   (`ErrorHandler.kt` uses `CancellationException`-aware handler). Platform-specific shutdown:
   JVM uses `Runtime.addShutdownHook`, native registers `SIGTERM`/`SIGINT` handlers; servers stopped
   with 2s grace / 5s timeout. Uses `kotlinx-cli` for argument parsing and the `shadow` Gradle plugin
@@ -97,8 +104,9 @@ Kotlin Multiplatform project using Gradle version catalogs.
 - Requests with `stream=true` are not converted and must be passed through unchanged.
 - For the supported conversion path, `proxy` aggregates the final `Response` state in memory and only then writes
   the downstream non-streaming JSON response. It does not stream partial JSON fragments downstream.
-- `ResponseAccumulator` and `ChatCompletionsAccumulator` are not thread-safe — `accumulate()` must be called from a
-  single coroutine.
+- `ResponsesApiProxy` extends `AbstractApiProxy`; subclasses implement `proxy()` for protocol-specific conversion.
+- `ResponseAccumulator` and `ChatCompletionsAccumulator` both implement the `SseAccumulator` interface.
+  They are not thread-safe — `accumulate()` must be called from a single coroutine.
 - `cli` uses CIO engine everywhere (client and server), no HTTPS support.
 - `cli` uses `expect/actual` for `configureLogging()` (JVM sets logback to INFO; native is no-op) and
   `registerShutdownHook()` (JVM uses `Runtime.addShutdownHook`; native uses POSIX `signal`).

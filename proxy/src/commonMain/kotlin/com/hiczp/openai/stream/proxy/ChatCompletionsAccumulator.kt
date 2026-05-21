@@ -18,15 +18,15 @@ private val logger = KotlinLogging.logger("com.hiczp.openai.stream.proxy.ChatCom
  * chunks via deep merge, so fields that only appear on certain chunks are preserved in the final
  * response. The streaming `object` value is replaced with `chat.completion` during assembly.
  *
- * Not thread-safe - callers must ensure [accumulate] is called from a single coroutine.
+ * It is **not thread-safe** - callers must ensure
+ * [accumulate] is called from a single thread or coordinate access externally.
  */
 class ChatCompletionsAccumulator : SseAccumulator {
     private val choices = mutableMapOf<Int, ChoiceState>()
     private val topLevelFields = mutableMapOf<String, JsonElement>()
     private var assembledResponse: JsonObject? = null
 
-    /** Whether a final non-streaming response has been assembled. */
-    val isTerminated: Boolean get() = assembledResponse != null
+    override val isTerminated: Boolean get() = assembledResponse != null
 
     /**
      * The aggregated response JSON.

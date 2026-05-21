@@ -28,7 +28,7 @@ class ResponseAccumulator : SseAccumulator {
     private var syntheticResponse: JsonObject? = null
 
     /** Whether a terminal response event has been received and accumulation is finished. */
-    val isTerminated: Boolean get() = syntheticResponse != null
+    override val isTerminated: Boolean get() = syntheticResponse != null
 
     /**
      * The aggregated Response object.

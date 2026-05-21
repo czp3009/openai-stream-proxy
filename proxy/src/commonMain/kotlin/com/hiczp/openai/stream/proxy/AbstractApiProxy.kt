@@ -1,5 +1,6 @@
 package com.hiczp.openai.stream.proxy
 
+import com.hiczp.openai.stream.proxy.AbstractApiProxy.Companion.stripHopByHopHeaders
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.engine.*
@@ -15,6 +16,17 @@ import kotlinx.io.IOException
 
 private val logger = KotlinLogging.logger("com.hiczp.openai.stream.proxy.ApiProxy")
 
+/**
+ * Shared base class for OpenAI API proxies.
+ *
+ * Provides the upstream HTTP client (with SSE and timeout plugins), [passthrough] for forwarding
+ * requests unchanged, and [stripHopByHopHeaders] (internal companion utility). Subclasses
+ * implement [proxy] to define protocol-specific conversion logic.
+ *
+ * @param engine the HTTP client engine used for upstream requests
+ * @param upstreamBaseUrl the base URL of the upstream OpenAI-compatible server (e.g. `https://api.openai.com`)
+ * @param timeoutMillis timeout in milliseconds for request, connect, and socket operations (default 10 minutes)
+ */
 abstract class AbstractApiProxy(
     val engine: HttpClientEngine,
     val upstreamBaseUrl: String,
@@ -29,6 +41,31 @@ abstract class AbstractApiProxy(
         }
     }
 
+    /**
+     * Proxies a single downstream request to the upstream server.
+     *
+     * Subclasses implement this method to define protocol-specific conversion logic (e.g. converting
+     * a non-streaming request to an upstream SSE stream and aggregating the result).
+     *
+     * ## Return value contract
+     *
+     * - **Non-null**: the caller should send the returned [OutgoingContent] to the downstream client
+     *   (e.g. via `call.respond(result)`).
+     * - **Null**: the upstream did not produce a reliable response (network error, upstream failure,
+     *   etc.). The caller should either drop the downstream connection or respond with a status code
+     *   that indicates an upstream error (e.g. 502 Bad Gateway).
+     *
+     * ## Exception contract
+     *
+     * This method may throw exceptions for unexpected non-network failures while processing the proxy
+     * flow (e.g. malformed upstream data or bugs). The caller should catch such exceptions and return
+     * an error response to the downstream client (e.g. via [OpenAiErrors.errorResponse]).
+     *
+     * @param requestMethod the HTTP method of the downstream request
+     * @param requestUri the request URI (path and query string) of the downstream request
+     * @param requestHeaders the headers of the downstream request
+     * @param requestBody the body of the downstream request
+     */
     abstract suspend fun proxy(
         requestMethod: HttpMethod,
         requestUri: String,
