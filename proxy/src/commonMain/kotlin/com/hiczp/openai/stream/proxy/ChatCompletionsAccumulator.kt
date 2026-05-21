@@ -18,6 +18,14 @@ private val logger = KotlinLogging.logger("com.hiczp.openai.stream.proxy.ChatCom
  * chunks via deep merge, so fields that only appear on certain chunks are preserved in the final
  * response. The streaming `object` value is replaced with `chat.completion` during assembly.
  *
+ * This class only consumes events after a successful SSE response has started; HTTP-level failures
+ * before the SSE stream starts are outside this class's responsibility. The terminal marker is
+ * `data: [DONE]`; callers must check [isTerminated] after collecting the upstream stream and treat
+ * a closed stream without `[DONE]` as an incomplete upstream response.
+ *
+ * Callers should add `stream_options.include_usage=true` to upstream requests when they need
+ * `usage` in the assembled response; otherwise the upstream stream does not include final usage.
+ *
  * It is **not thread-safe** - callers must ensure
  * [accumulate] is called from a single thread or coordinate access externally.
  */
