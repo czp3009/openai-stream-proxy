@@ -22,19 +22,19 @@ kotlin {
     mingwX64 {
         binaries.executable {
             this.entryPoint = nativeEntryPoint
-            this.baseName = "${rootProject.name}-${rootProject.version}"
+            this.baseName = "${rootProject.name}-${rootProject.version}-${this@mingwX64.name}"
         }
     }
     linuxX64 {
         binaries.executable {
             this.entryPoint = nativeEntryPoint
-            this.baseName = "${rootProject.name}-${rootProject.version}"
+            this.baseName = "${rootProject.name}-${rootProject.version}-${this@linuxX64.name}"
         }
     }
     macosArm64 {
         binaries.executable {
             this.entryPoint = nativeEntryPoint
-            this.baseName = "${rootProject.name}-${rootProject.version}"
+            this.baseName = "${rootProject.name}-${rootProject.version}-${this@macosArm64.name}"
         }
     }
 
@@ -70,6 +70,7 @@ tasks.shadowJar {
     this.archiveBaseName = rootProject.name
     this.archiveAppendix = ""
     this.archiveVersion = rootProject.version as String
+    this.archiveClassifier = "fat"
     this.manifest {
         this.attributes["Main-Class"] = jvmMainClass
     }
