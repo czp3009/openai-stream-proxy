@@ -17,14 +17,14 @@ class ResponseAccumulatorTest {
 
         val response = accumulator.response
         assertEquals("completed", response.str("status"))
-        assertEquals(19, response.obj("usage").int("total_tokens"))
+        assertEquals(19, response.getValue("usage").jsonObject.int("total_tokens"))
 
-        val message = response.arr("output").single().jsonObject
+        val message = response.getValue("output").jsonArray.single().jsonObject
         assertEquals("message", message.str("type"))
         assertEquals("completed", message.str("status"))
         assertEquals("assistant", message.str("role"))
 
-        val content = message.arr("content").single().jsonObject
+        val content = message.getValue("content").jsonArray.single().jsonObject
         assertEquals("output_text", content.str("type"))
         assertEquals("Hi! \uD83D\uDC4B How can I help you today?", content.str("text"))
     }
@@ -38,7 +38,7 @@ class ResponseAccumulatorTest {
         assertTrue(accumulator.isTerminated)
         assertEquals(ResponseAccumulator.TerminalType.FAILED, accumulator.terminalType)
         assertEquals("failed", accumulator.response.str("status"))
-        assertEquals("server_error", accumulator.response.obj("error").str("code"))
+        assertEquals("server_error", accumulator.response.getValue("error").jsonObject.str("code"))
         assertEquals("failed partial output", accumulator.response.outputText())
     }
 
@@ -51,19 +51,15 @@ class ResponseAccumulatorTest {
         assertTrue(accumulator.isTerminated)
         assertEquals(ResponseAccumulator.TerminalType.INCOMPLETE, accumulator.terminalType)
         assertEquals("incomplete", accumulator.response.str("status"))
-        assertEquals("max_output_tokens", accumulator.response.obj("incomplete_details").str("reason"))
+        assertEquals("max_output_tokens", accumulator.response.getValue("incomplete_details").jsonObject.str("reason"))
         assertEquals("incomplete partial output", accumulator.response.outputText())
     }
 }
-
-private fun JsonObject.obj(name: String) = getValue(name).jsonObject
-
-private fun JsonObject.arr(name: String) = getValue(name).jsonArray
 
 private fun JsonObject.str(name: String) = getValue(name).jsonPrimitive.content
 
 private fun JsonObject.int(name: String) = getValue(name).jsonPrimitive.int
 
-private fun JsonObject.outputText() = arr("output")
-    .flatMap { it.jsonObject.arr("content") }
+private fun JsonObject.outputText() = getValue("output").jsonArray
+    .flatMap { it.jsonObject.getValue("content").jsonArray }
     .joinToString("") { it.jsonObject.str("text") }

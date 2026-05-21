@@ -173,7 +173,7 @@ class ProxyTest {
                     contentType(ContentType.Application.Json)
                     setBody("""{"model":"gpt-4","input":"hello"}""")
                 }
-                val error = Json.parseToJsonElement(response.bodyAsText()).jsonObject.obj("error")
+                val error = Json.parseToJsonElement(response.bodyAsText()).jsonObject.getValue("error").jsonObject
 
                 assertEquals(case.expectedStatus, response.status)
                 assertEquals(case.expectedType, error.str("type"))
@@ -629,7 +629,5 @@ class ProxyTest {
         }
     }
 }
-
-private fun JsonObject.obj(name: String) = getValue(name).jsonObject
 
 private fun JsonObject.str(name: String) = getValue(name).jsonPrimitive.content
