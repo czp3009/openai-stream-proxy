@@ -18,7 +18,7 @@ private val logger = KotlinLogging.logger("com.hiczp.openai.stream.proxy.Respons
  * It is **not thread-safe** - callers must ensure
  * [accumulate] is called from a single thread or coordinate access externally.
  */
-class ResponseAccumulator {
+class ResponseAccumulator : SseAccumulator {
     private val outputArray = mutableListOf<JsonElement?>()
 
     /** The type of the terminal event, or `null` if no terminal response event has been received yet. */
@@ -34,7 +34,7 @@ class ResponseAccumulator {
      * The aggregated Response object.
      * @throws IllegalStateException if no terminal response event has been received yet.
      */
-    val response: JsonObject
+    override val response: JsonObject
         get() = checkNotNull(syntheticResponse) { "No terminal response event received yet" }
 
     /** The type of terminal event that ended the SSE stream. */
@@ -54,7 +54,7 @@ class ResponseAccumulator {
      * Events are processed only until a terminal response event is received; subsequent
      * calls are no-ops.
      */
-    fun accumulate(event: ServerSentEvent) {
+    override fun accumulate(event: ServerSentEvent) {
         if (isTerminated) {
             logger.trace { "Dropping event after termination: ${event.event}" }
             return

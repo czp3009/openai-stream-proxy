@@ -20,7 +20,7 @@ private val logger = KotlinLogging.logger("com.hiczp.openai.stream.proxy.ChatCom
  *
  * Not thread-safe - callers must ensure [accumulate] is called from a single coroutine.
  */
-class ChatCompletionsAccumulator {
+class ChatCompletionsAccumulator : SseAccumulator {
     private val choices = mutableMapOf<Int, ChoiceState>()
     private val topLevelFields = mutableMapOf<String, JsonElement>()
     private var assembledResponse: JsonObject? = null
@@ -32,7 +32,7 @@ class ChatCompletionsAccumulator {
      * The aggregated response JSON.
      * @throws IllegalStateException if no final response has been assembled yet.
      */
-    val response: JsonObject get() = checkNotNull(assembledResponse) { "No final response assembled yet" }
+    override val response: JsonObject get() = checkNotNull(assembledResponse) { "No final response assembled yet" }
 
     private class ChoiceState(
         val message: MutableMap<String, JsonElement> = mutableMapOf(),
@@ -43,7 +43,7 @@ class ChatCompletionsAccumulator {
      * Feeds a single [ServerSentEvent] into the accumulator.
      * Events are processed until a final response is assembled; subsequent calls are no-ops.
      */
-    fun accumulate(event: ServerSentEvent) {
+    override fun accumulate(event: ServerSentEvent) {
         if (isTerminated) return
 
         val data = event.data ?: return
