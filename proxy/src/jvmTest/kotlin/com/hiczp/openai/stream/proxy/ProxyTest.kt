@@ -286,7 +286,7 @@ class ProxyTest {
             val response = openaiClient.responses().create(params)
 
             assertEquals(
-                "resp_0e993bb721c78aa4016a089991a23c81919829e942dc1e9914",
+                "resp_0da0bdeaf2fccdb9016a105f999e488191908828edc6db4c2a",
                 response.id(),
             )
 
@@ -295,7 +295,7 @@ class ProxyTest {
                 .flatMap { it.content() }
                 .mapNotNull { it.outputText().orElse(null) }
                 .joinToString("") { it.text() }
-            assertEquals("Hi! 👋 How can I help you today?", text)
+            assertEquals("Hello! How can I help you today?", text)
         } finally {
             downstreamServer.stop()
             upstreamServer.stop()
@@ -349,7 +349,7 @@ class ProxyTest {
                 }
             }
 
-            assertEquals("Hi! 👋 How can I help you today?", text.toString())
+            assertEquals("Hello! How can I help you today?", text.toString())
         } finally {
             downstreamServer.stop()
             upstreamServer.stop()
