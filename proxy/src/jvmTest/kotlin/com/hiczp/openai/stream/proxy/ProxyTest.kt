@@ -17,7 +17,6 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.ServerSocket
@@ -176,8 +175,8 @@ class ProxyTest {
                 val error = Json.parseToJsonElement(response.bodyAsText()).jsonObject.getValue("error").jsonObject
 
                 assertEquals(case.expectedStatus, response.status)
-                assertEquals(case.expectedType, error.str("type"))
-                assertEquals(case.expectedCode, error.str("code"))
+                assertEquals(case.expectedType, error.getValue("type").jsonPrimitive.content)
+                assertEquals(case.expectedCode, error.getValue("code").jsonPrimitive.content)
             }
         }
     }
@@ -629,5 +628,3 @@ class ProxyTest {
         }
     }
 }
-
-private fun JsonObject.str(name: String) = getValue(name).jsonPrimitive.content

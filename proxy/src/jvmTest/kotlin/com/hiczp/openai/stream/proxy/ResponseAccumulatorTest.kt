@@ -16,17 +16,17 @@ class ResponseAccumulatorTest {
         assertEquals(ResponseAccumulator.TerminalType.COMPLETED, accumulator.terminalType)
 
         val response = accumulator.response
-        assertEquals("completed", response.str("status"))
-        assertEquals(20, response.getValue("usage").jsonObject.int("total_tokens"))
+        assertEquals("completed", response.getValue("status").jsonPrimitive.content)
+        assertEquals(20, response.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.int)
 
         val message = response.getValue("output").jsonArray.single().jsonObject
-        assertEquals("message", message.str("type"))
-        assertEquals("completed", message.str("status"))
-        assertEquals("assistant", message.str("role"))
+        assertEquals("message", message.getValue("type").jsonPrimitive.content)
+        assertEquals("completed", message.getValue("status").jsonPrimitive.content)
+        assertEquals("assistant", message.getValue("role").jsonPrimitive.content)
 
         val content = message.getValue("content").jsonArray.single().jsonObject
-        assertEquals("output_text", content.str("type"))
-        assertEquals("Hello! How can I help you today?", content.str("text"))
+        assertEquals("output_text", content.getValue("type").jsonPrimitive.content)
+        assertEquals("Hello! How can I help you today?", content.getValue("text").jsonPrimitive.content)
     }
 
     @Test
@@ -37,8 +37,11 @@ class ResponseAccumulatorTest {
 
         assertTrue(accumulator.isTerminated)
         assertEquals(ResponseAccumulator.TerminalType.FAILED, accumulator.terminalType)
-        assertEquals("failed", accumulator.response.str("status"))
-        assertEquals("server_error", accumulator.response.getValue("error").jsonObject.str("code"))
+        assertEquals("failed", accumulator.response.getValue("status").jsonPrimitive.content)
+        assertEquals(
+            "server_error",
+            accumulator.response.getValue("error").jsonObject.getValue("code").jsonPrimitive.content
+        )
         assertEquals("failed partial output", accumulator.response.outputText())
     }
 
@@ -50,16 +53,15 @@ class ResponseAccumulatorTest {
 
         assertTrue(accumulator.isTerminated)
         assertEquals(ResponseAccumulator.TerminalType.INCOMPLETE, accumulator.terminalType)
-        assertEquals("incomplete", accumulator.response.str("status"))
-        assertEquals("max_output_tokens", accumulator.response.getValue("incomplete_details").jsonObject.str("reason"))
+        assertEquals("incomplete", accumulator.response.getValue("status").jsonPrimitive.content)
+        assertEquals(
+            "max_output_tokens",
+            accumulator.response.getValue("incomplete_details").jsonObject.getValue("reason").jsonPrimitive.content,
+        )
         assertEquals("incomplete partial output", accumulator.response.outputText())
     }
 }
 
-private fun JsonObject.str(name: String) = getValue(name).jsonPrimitive.content
-
-private fun JsonObject.int(name: String) = getValue(name).jsonPrimitive.int
-
 private fun JsonObject.outputText() = getValue("output").jsonArray
     .flatMap { it.jsonObject.getValue("content").jsonArray }
-    .joinToString("") { it.jsonObject.str("text") }
+    .joinToString("") { it.jsonObject.getValue("text").jsonPrimitive.content }
