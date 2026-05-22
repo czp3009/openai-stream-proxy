@@ -48,8 +48,12 @@ Kotlin Multiplatform project using Gradle version catalogs.
 
 - **proxy** - Core library. `AbstractApiProxy` is the shared base class providing the upstream HTTP
   client (with SSE and timeout plugins), `passthrough()` for forwarding requests unchanged, and
-  `stripHopByHopHeaders()`. Subclasses implement `proxy()` to define protocol-specific conversion
-  logic. `ResponsesApiProxy` extends `AbstractApiProxy` and handles one protocol conversion path:
+  `stripHopByHopHeaders()`. The public entry point `proxy()` is a template method that validates
+  the request and delegates to `convert()` (another template method). Subclasses implement
+  `needConvert()` (path/method matching), `rewriteBody()` (body rewriting), `createAccumulator()`
+  (SSE event accumulator factory), and `buildResult()` (final response assembly) to define
+  protocol-specific conversion logic. `ResponsesApiProxy` extends `AbstractApiProxy` and handles one protocol conversion
+  path:
   downstream non-streaming `POST /v1/responses` requests are rewritten to upstream `stream: true`,
   the upstream SSE is consumed by `ResponseAccumulator` (which collects `response.output_item.done`
   events and waits for a terminal event: `response.completed`, `response.failed`, or
@@ -104,7 +108,8 @@ Kotlin Multiplatform project using Gradle version catalogs.
 - Requests with `stream=true` are not converted and must be passed through unchanged.
 - For the supported conversion path, `proxy` aggregates the final `Response` state in memory and only then writes
   the downstream non-streaming JSON response. It does not stream partial JSON fragments downstream.
-- `ResponsesApiProxy` extends `AbstractApiProxy`; subclasses implement `proxy()` for protocol-specific conversion.
+- `ResponsesApiProxy` extends `AbstractApiProxy`; subclasses implement `needConvert()`,
+  `rewriteBody()`, `createAccumulator()`, and `buildResult()` for protocol-specific conversion.
 - `ResponseAccumulator` and `ChatCompletionsAccumulator` both implement the `SseAccumulator` interface.
   They are not thread-safe — `accumulate()` must be called from a single coroutine.
 - `cli` uses CIO engine everywhere (client and server), no HTTPS support.
