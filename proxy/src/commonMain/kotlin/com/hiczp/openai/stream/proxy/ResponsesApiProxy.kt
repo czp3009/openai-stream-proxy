@@ -42,6 +42,7 @@ class ResponsesApiProxy(
 
     override fun createAccumulator(): SseAccumulator = ResponseAccumulator()
 
+    @Suppress("DuplicatedCode")
     override fun buildResult(accumulator: SseAccumulator, sessionHeaders: Headers): OutgoingContent? {
         val responseAccumulator = accumulator as? ResponseAccumulator ?: return null
         val response = responseAccumulator.response

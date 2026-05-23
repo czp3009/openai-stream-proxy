@@ -13,6 +13,9 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import java.net.ServerSocket
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -74,7 +77,7 @@ class ServerTest {
         try {
             val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4","input":"hello"}""")
+                setBody(buildJsonObject { put("model", "gpt-4"); put("input", "hello") }.toString())
             }
             assertEquals(HttpStatusCode.OK, response.status)
             val body = response.bodyAsText()
@@ -91,11 +94,11 @@ class ServerTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
 
-        val incompleteSseData = (
-                "event: response.output_item.done\n" +
-                        "data: {\"output_index\":0,\"item\":{\"type\":\"message\"}}\n" +
-                        "\n"
-                ).toByteArray()
+        val incompleteChunk = buildJsonObject {
+            put("output_index", 0)
+            putJsonObject("item") { put("type", "message") }
+        }
+        val incompleteSseData = "event: response.output_item.done\ndata: $incompleteChunk\n\n".toByteArray()
 
         val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
             routing {
@@ -140,7 +143,7 @@ class ServerTest {
         try {
             val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4","input":"hello"}""")
+                setBody(buildJsonObject { put("model", "gpt-4"); put("input", "hello") }.toString())
             }
             assertEquals(HttpStatusCode.BadGateway, response.status)
             val body = response.bodyAsText()
@@ -189,7 +192,7 @@ class ServerTest {
         try {
             val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4","input":"hello"}""")
+                setBody(buildJsonObject { put("model", "gpt-4"); put("input", "hello") }.toString())
             }
             assertEquals(HttpStatusCode.InternalServerError, response.status)
             val body = response.bodyAsText()
@@ -214,15 +217,15 @@ class ServerTest {
             routing { get("/identify") { call.respondText("upstream-B") } }
         }.start()
 
-        val proxies = mapOf(
-            portA to ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPortA"),
-            portB to ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPortB"),
+        val rules = listOf(
+            ProxyRule(portA, "http://127.0.0.1:$upstreamPortA"),
+            ProxyRule(portB, "http://127.0.0.1:$upstreamPortB"),
         )
 
         val server = embeddedServer(
             ServerCIO,
-            configure = { proxies.keys.forEach { connector { port = it } } }
-        ) { configureProxyServer(proxies) }.start()
+            configure = { rules.forEach { connector { port = it.listenPort } } }
+        ) { configureProxyServer(CIO.create(), rules, 600_000L) }.start()
 
         val client = HttpClient(CIO)
         try {

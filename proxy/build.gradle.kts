@@ -27,8 +27,6 @@ kotlin {
             implementation(libs.ktor.server.core)
             implementation(libs.ktor.server.cio)
             implementation(libs.ktor.client.cio)
-            implementation(libs.openai.java)
-            implementation(libs.openai.java.okhttp)
             implementation(libs.logback.classic)
         }
     }

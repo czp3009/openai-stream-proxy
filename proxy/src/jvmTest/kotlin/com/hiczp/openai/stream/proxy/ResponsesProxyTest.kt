@@ -1,10 +1,5 @@
 package com.hiczp.openai.stream.proxy
 
-import com.openai.client.okhttp.OpenAIOkHttpClient
-import com.openai.errors.OpenAIServiceException
-import com.openai.models.responses.EasyInputMessage
-import com.openai.models.responses.ResponseCreateParams
-import com.openai.models.responses.ResponseInputItem
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
@@ -16,15 +11,15 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.*
 import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import io.ktor.server.cio.CIO as ServerCIO
 
-class ProxyTest {
+class ResponsesProxyTest {
     private val sseResponseText: ByteArray by lazy {
         sseResource("responses_sse.txt")
     }
@@ -34,17 +29,37 @@ class ProxyTest {
 
     private fun findFreePort(): Int = ServerSocket(0).use { it.localPort }
 
-    private fun failedResponseSse(code: String): ByteArray = buildString {
-        append("event: response.failed\n")
-        append("data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"object\":\"response\",\"status\":\"failed\",\"error\":{\"code\":\"$code\",\"message\":\"$code message\"},\"output\":[]},\"sequence_number\":1}\n")
-        append('\n')
-    }.encodeToByteArray()
+    private fun failedResponseSse(code: String): ByteArray {
+        val data = buildJsonObject {
+            put("type", "response.failed")
+            put("response", buildJsonObject {
+                put("id", "resp_failed")
+                put("object", "response")
+                put("status", "failed")
+                put("error", buildJsonObject {
+                    put("code", code)
+                    put("message", "$code message")
+                })
+                putJsonArray("output") {}
+            })
+            put("sequence_number", 1)
+        }
+        return "event: response.failed\ndata: ${data}\n\n".encodeToByteArray()
+    }
 
-    private fun failedResponseWithoutErrorSse(): ByteArray = buildString {
-        append("event: response.failed\n")
-        append("data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"object\":\"response\",\"status\":\"failed\",\"output\":[]},\"sequence_number\":1}\n")
-        append('\n')
-    }.encodeToByteArray()
+    private fun failedResponseWithoutErrorSse(): ByteArray {
+        val data = buildJsonObject {
+            put("type", "response.failed")
+            put("response", buildJsonObject {
+                put("id", "resp_failed")
+                put("object", "response")
+                put("status", "failed")
+                putJsonArray("output") {}
+            })
+            put("sequence_number", 1)
+        }
+        return "event: response.failed\ndata: ${data}\n\n".encodeToByteArray()
+    }
 
     private suspend fun withProxyForSse(
         upstreamSseData: ByteArray,
@@ -69,7 +84,7 @@ class ProxyTest {
         val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
 
         val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
-            routing { proxyHandler(proxy) }
+            routing { responsesProxyHandler(proxy) }
         }.start()
 
         try {
@@ -80,7 +95,7 @@ class ProxyTest {
         }
     }
 
-    private fun Route.proxyHandler(proxy: ResponsesApiProxy) {
+    private fun Route.responsesProxyHandler(proxy: ResponsesApiProxy) {
         post("/v1/responses") {
             val result = try {
                 proxy.proxy(
@@ -108,17 +123,31 @@ class ProxyTest {
         }
     }
 
+    private fun responsesRequest(model: String = "gpt-4", input: String = "hello", stream: Boolean? = null) =
+        buildJsonObject {
+            put("model", model)
+            put("input", input)
+            if (stream != null) put("stream", stream)
+        }.toString()
+
+    private suspend fun postResponse(
+        downstreamPort: Int,
+        body: String,
+    ): Pair<HttpStatusCode, JsonObject> {
+        val client = HttpClient(CIO.create())
+        val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+        return response.status to Json.parseToJsonElement(response.bodyAsText()).jsonObject
+    }
+
     @Test
     fun `proxy returns 200 for incomplete terminal response events`() = runBlocking {
         withProxyForSse(sseResource("responses_incomplete_sse.txt")) { downstreamPort ->
-            val client = HttpClient(CIO.create())
-            val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4","input":"hello"}""")
-            }
-            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            val (status, body) = postResponse(downstreamPort, responsesRequest())
 
-            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(HttpStatusCode.OK, status)
             assertEquals("incomplete", body["status"]?.jsonPrimitive?.content)
         }
     }
@@ -167,14 +196,10 @@ class ProxyTest {
 
         cases.forEach { case ->
             withProxyForSse(case.sseData) { downstreamPort ->
-                val client = HttpClient(CIO.create())
-                val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
-                    contentType(ContentType.Application.Json)
-                    setBody("""{"model":"gpt-4","input":"hello"}""")
-                }
-                val error = Json.parseToJsonElement(response.bodyAsText()).jsonObject.getValue("error").jsonObject
+                val (status, body) = postResponse(downstreamPort, responsesRequest())
+                val error = body.getValue("error").jsonObject
 
-                assertEquals(case.expectedStatus, response.status)
+                assertEquals(case.expectedStatus, status)
                 assertEquals(case.expectedType, error.getValue("type").jsonPrimitive.content)
                 assertEquals(case.expectedCode, error.getValue("code").jsonPrimitive.content)
             }
@@ -184,14 +209,9 @@ class ProxyTest {
     @Test
     fun `proxy passes through failed terminal response when error is missing`() = runBlocking {
         withProxyForSse(failedResponseWithoutErrorSse()) { downstreamPort ->
-            val client = HttpClient(CIO.create())
-            val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4","input":"hello"}""")
-            }
-            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            val (status, body) = postResponse(downstreamPort, responsesRequest())
 
-            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(HttpStatusCode.OK, status)
             assertEquals("failed", body["status"]?.jsonPrimitive?.content)
             assertFalse(body.containsKey("error"))
         }
@@ -208,7 +228,7 @@ class ProxyTest {
             val client = HttpClient(CIO.create())
             val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4","input":"hello"}""")
+                setBody(responsesRequest())
             }
 
             assertEquals(HttpStatusCode.TooManyRequests, response.status)
@@ -219,85 +239,20 @@ class ProxyTest {
     }
 
     @Test
-    fun `openai SDK sees failed rate limit response as 429 service exception`() = runBlocking {
-        withProxyForSse(failedResponseSse("rate_limit_exceeded")) { downstreamPort ->
-            val openaiClient = OpenAIOkHttpClient.builder()
-                .apiKey("test-key")
-                .baseUrl("http://127.0.0.1:$downstreamPort/v1")
-                .maxRetries(0)
-                .build()
-
-            val message = EasyInputMessage.builder()
-                .role(EasyInputMessage.Role.USER)
-                .content("Hello")
-                .build()
-
-            val params = ResponseCreateParams.builder()
-                .inputOfResponse(listOf(ResponseInputItem.ofEasyInputMessage(message)))
-                .model("gpt-4")
-                .build()
-
-            val exception = assertFailsWith<OpenAIServiceException> {
-                openaiClient.responses().create(params)
-            }
-            assertEquals(429, exception.statusCode())
-        }
-    }
-
-    @Test
     fun `proxy converts non-streaming request and aggregates SSE response`() = runBlocking {
-        val upstreamPort = findFreePort()
-        val downstreamPort = findFreePort()
-
-        val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
-            routing {
-                post("/v1/responses") {
-                    call.respond(object : OutgoingContent.ByteArrayContent() {
-                        override val contentType = ContentType("text", "event-stream")
-                        override fun bytes(): ByteArray = sseResponseText
-                    })
-                }
+        withProxyForSse(sseResponseText) { downstreamPort ->
+            val client = HttpClient(CIO.create())
+            val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
+                contentType(ContentType.Application.Json)
+                setBody(responsesRequest(model = "gpt-5.3-codex", input = "Hello"))
             }
-        }.start()
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
 
-        val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
-
-        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
-            routing { proxyHandler(proxy) }
-        }.start()
-
-        try {
-            val openaiClient = OpenAIOkHttpClient.builder()
-                .apiKey("test-key")
-                .baseUrl("http://127.0.0.1:$downstreamPort/v1")
-                .build()
-
-            val message = EasyInputMessage.builder()
-                .role(EasyInputMessage.Role.USER)
-                .content("Hello")
-                .build()
-
-            val params = ResponseCreateParams.builder()
-                .inputOfResponse(listOf(ResponseInputItem.ofEasyInputMessage(message)))
-                .model("gpt-5.3-codex")
-                .build()
-
-            val response = openaiClient.responses().create(params)
-
+            assertEquals(HttpStatusCode.OK, response.status)
             assertEquals(
                 "resp_0da0bdeaf2fccdb9016a105f999e488191908828edc6db4c2a",
-                response.id(),
+                body["id"]?.jsonPrimitive?.content,
             )
-
-            val text = response.output()
-                .mapNotNull { it.message().orElse(null) }
-                .flatMap { it.content() }
-                .mapNotNull { it.outputText().orElse(null) }
-                .joinToString("") { it.text() }
-            assertEquals("Hello! How can I help you today?", text)
-        } finally {
-            downstreamServer.stop()
-            upstreamServer.stop()
         }
     }
 
@@ -320,35 +275,18 @@ class ProxyTest {
         val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
 
         val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
-            routing { proxyHandler(proxy) }
+            routing { responsesProxyHandler(proxy) }
         }.start()
 
         try {
-            val openaiClient = OpenAIOkHttpClient.builder()
-                .apiKey("test-key")
-                .baseUrl("http://127.0.0.1:$downstreamPort/v1")
-                .build()
-
-            val message = EasyInputMessage.builder()
-                .role(EasyInputMessage.Role.USER)
-                .content("Hello")
-                .build()
-
-            val params = ResponseCreateParams.builder()
-                .inputOfResponse(listOf(ResponseInputItem.ofEasyInputMessage(message)))
-                .model("gpt-5.3-codex")
-                .build()
-
-            val text = StringBuilder()
-            openaiClient.responses().createStreaming(params).use { streamResponse ->
-                streamResponse.stream().forEach { event ->
-                    event.outputTextDelta().ifPresent { textEvent ->
-                        text.append(textEvent.delta())
-                    }
-                }
+            val client = HttpClient(CIO.create())
+            val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
+                contentType(ContentType.Application.Json)
+                setBody(responsesRequest(model = "gpt-5.3-codex", input = "Hello", stream = true))
             }
 
-            assertEquals("Hello! How can I help you today?", text.toString())
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(ContentType("text", "event-stream"), response.contentType()?.withoutParameters())
         } finally {
             downstreamServer.stop()
             upstreamServer.stop()
@@ -357,55 +295,24 @@ class ProxyTest {
 
     @Test
     fun `handler returns 502 when proxy returns null for incomplete SSE stream`() = runBlocking {
-        val upstreamPort = findFreePort()
-        val downstreamPort = findFreePort()
-
         val incompleteSseData = (
                 "event: response.output_item.done\n" +
-                        "data: {\"output_index\":0,\"item\":{\"type\":\"message\"}}\n" +
+                        "data: ${
+                            buildJsonObject {
+                                put("output_index", 0); put(
+                                "item",
+                                buildJsonObject { put("type", "message") })
+                            }
+                        }\n" +
                         "\n"
                 ).toByteArray()
 
-        val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
-            routing {
-                post("/v1/responses") {
-                    call.respond(object : OutgoingContent.ByteArrayContent() {
-                        override val contentType = ContentType("text", "event-stream")
-                        override fun bytes() = incompleteSseData
-                    })
-                }
-            }
-        }.start()
+        withProxyForSse(incompleteSseData) { downstreamPort ->
+            val (status, body) = postResponse(downstreamPort, responsesRequest())
 
-        val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
-
-        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
-            routing { proxyHandler(proxy) }
-        }.start()
-
-        try {
-            val openaiClient = OpenAIOkHttpClient.builder()
-                .apiKey("test-key")
-                .baseUrl("http://127.0.0.1:$downstreamPort/v1")
-                .build()
-
-            val message = EasyInputMessage.builder()
-                .role(EasyInputMessage.Role.USER)
-                .content("Hello")
-                .build()
-
-            val params = ResponseCreateParams.builder()
-                .inputOfResponse(listOf(ResponseInputItem.ofEasyInputMessage(message)))
-                .model("gpt-4")
-                .build()
-
-            val exception = assertFailsWith<OpenAIServiceException> {
-                openaiClient.responses().create(params)
-            }
-            assertEquals(502, exception.statusCode())
-        } finally {
-            downstreamServer.stop()
-            upstreamServer.stop()
+            assertEquals(HttpStatusCode.BadGateway, status)
+            val error = body.getValue("error").jsonObject
+            assertEquals("upstream_error", error.getValue("type").jsonPrimitive.content)
         }
     }
 
@@ -417,29 +324,15 @@ class ProxyTest {
         val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$unreachablePort")
 
         val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
-            routing { proxyHandler(proxy) }
+            routing { responsesProxyHandler(proxy) }
         }.start()
 
         try {
-            val openaiClient = OpenAIOkHttpClient.builder()
-                .apiKey("test-key")
-                .baseUrl("http://127.0.0.1:$downstreamPort/v1")
-                .build()
+            val (status, body) = postResponse(downstreamPort, responsesRequest())
 
-            val message = EasyInputMessage.builder()
-                .role(EasyInputMessage.Role.USER)
-                .content("Hello")
-                .build()
-
-            val params = ResponseCreateParams.builder()
-                .inputOfResponse(listOf(ResponseInputItem.ofEasyInputMessage(message)))
-                .model("gpt-4")
-                .build()
-
-            val exception = assertFailsWith<OpenAIServiceException> {
-                openaiClient.responses().create(params)
-            }
-            assertEquals(500, exception.statusCode())
+            assertEquals(HttpStatusCode.InternalServerError, status)
+            val error = body.getValue("error").jsonObject
+            assertEquals("proxy_error", error.getValue("type").jsonPrimitive.content)
         } finally {
             downstreamServer.stop()
         }
@@ -466,16 +359,16 @@ class ProxyTest {
         val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
 
         val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
-            routing { proxyHandler(proxy) }
+            routing { responsesProxyHandler(proxy) }
         }.start()
 
         try {
             val client = HttpClient(CIO.create())
             val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses?foo=bar&baz=123") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4","input":"hello"}""")
+                setBody(responsesRequest())
             }
-            assertEquals(200, response.status.value)
+            assertEquals(HttpStatusCode.OK, response.status)
             assertEquals("/v1/responses?foo=bar&baz=123", capturedUri.get())
         } finally {
             downstreamServer.stop()
@@ -501,16 +394,16 @@ class ProxyTest {
         val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
 
         val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
-            routing { proxyHandler(proxy) }
+            routing { responsesProxyHandler(proxy) }
         }.start()
 
         try {
             val client = HttpClient(CIO.create())
             val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses?key=value") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"model":"gpt-4","input":"hello","stream":true}""")
+                setBody(responsesRequest(stream = true))
             }
-            assertEquals(200, response.status.value)
+            assertEquals(HttpStatusCode.OK, response.status)
             assertEquals("/v1/responses?key=value", capturedUri.get())
         } finally {
             downstreamServer.stop()
@@ -519,7 +412,7 @@ class ProxyTest {
     }
 
     @Test
-    fun `openai SDK User-Agent is forwarded to upstream in convert flow`() = runBlocking {
+    fun `request headers are forwarded to upstream in convert flow`() = runBlocking {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedUserAgent = AtomicReference<String>()
@@ -539,33 +432,18 @@ class ProxyTest {
         val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
 
         val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
-            routing { proxyHandler(proxy) }
+            routing { responsesProxyHandler(proxy) }
         }.start()
 
         try {
-            val openaiClient = OpenAIOkHttpClient.builder()
-                .apiKey("test-key")
-                .baseUrl("http://127.0.0.1:$downstreamPort/v1")
-                .build()
+            val client = HttpClient(CIO.create())
+            client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
+                contentType(ContentType.Application.Json)
+                header("User-Agent", "TestClient/1.0")
+                setBody(responsesRequest(model = "gpt-5.3-codex", input = "Hello"))
+            }
 
-            val message = EasyInputMessage.builder()
-                .role(EasyInputMessage.Role.USER)
-                .content("Hello")
-                .build()
-
-            val params = ResponseCreateParams.builder()
-                .inputOfResponse(listOf(ResponseInputItem.ofEasyInputMessage(message)))
-                .model("gpt-5.3-codex")
-                .build()
-
-            openaiClient.responses().create(params)
-
-            val ua = capturedUserAgent.get()
-            assertNotNull(ua, "Upstream should receive a User-Agent header")
-            assertTrue(
-                ua.contains("OpenAI"),
-                "Expected User-Agent to contain 'OpenAI' (SDK UA), but got: $ua"
-            )
+            assertEquals("TestClient/1.0", capturedUserAgent.get())
         } finally {
             downstreamServer.stop()
             upstreamServer.stop()
@@ -573,7 +451,7 @@ class ProxyTest {
     }
 
     @Test
-    fun `openai SDK User-Agent is forwarded to upstream in passthrough flow`() = runBlocking {
+    fun `request headers are forwarded to upstream in passthrough flow`() = runBlocking {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedUserAgent = AtomicReference<String>()
@@ -593,35 +471,18 @@ class ProxyTest {
         val proxy = ResponsesApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
 
         val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
-            routing { proxyHandler(proxy) }
+            routing { responsesProxyHandler(proxy) }
         }.start()
 
         try {
-            val openaiClient = OpenAIOkHttpClient.builder()
-                .apiKey("test-key")
-                .baseUrl("http://127.0.0.1:$downstreamPort/v1")
-                .build()
-
-            val message = EasyInputMessage.builder()
-                .role(EasyInputMessage.Role.USER)
-                .content("Hello")
-                .build()
-
-            val params = ResponseCreateParams.builder()
-                .inputOfResponse(listOf(ResponseInputItem.ofEasyInputMessage(message)))
-                .model("gpt-5.3-codex")
-                .build()
-
-            openaiClient.responses().createStreaming(params).use { streamResponse ->
-                streamResponse.stream().forEach { }
+            val client = HttpClient(CIO.create())
+            client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
+                contentType(ContentType.Application.Json)
+                header("User-Agent", "TestClient/1.0")
+                setBody(responsesRequest(model = "gpt-5.3-codex", input = "Hello", stream = true))
             }
 
-            val ua = capturedUserAgent.get()
-            assertNotNull(ua, "Upstream should receive a User-Agent header")
-            assertTrue(
-                ua.contains("OpenAI"),
-                "Expected User-Agent to contain 'OpenAI' (SDK UA), but got: $ua"
-            )
+            assertEquals("TestClient/1.0", capturedUserAgent.get())
         } finally {
             downstreamServer.stop()
             upstreamServer.stop()

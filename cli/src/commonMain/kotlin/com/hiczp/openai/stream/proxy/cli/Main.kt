@@ -1,8 +1,11 @@
 package com.hiczp.openai.stream.proxy.cli
 
+import com.hiczp.openai.stream.proxy.AbstractApiProxy
+import com.hiczp.openai.stream.proxy.ChatCompletionsApiProxy
 import com.hiczp.openai.stream.proxy.OpenAiErrors
 import com.hiczp.openai.stream.proxy.ResponsesApiProxy
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.ktor.client.engine.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.http.*
@@ -10,6 +13,8 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.util.*
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.cli.ArgParser
 import kotlinx.cli.ArgParser.OptionPrefixStyle
 import kotlinx.cli.ArgType
@@ -17,6 +22,7 @@ import kotlinx.cli.default
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlin.reflect.KClass
 import kotlin.time.DurationUnit
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -44,33 +50,30 @@ fun main(args: Array<String>) {
         logger.error { "Invalid config file: $configFile" }
         throw e
     }
-    val clientEngine = createClientEngine()
-    val proxies = config.rules.associate { rule ->
-        rule.listenPort to ResponsesApiProxy(
-            engine = clientEngine,
-            upstreamBaseUrl = rule.upstreamUrl,
-            timeoutMillis = config.timeoutSeconds * 1_000,
-        )
-    }
-    logger.info { "Loaded ${proxies.size} rule(s) from $configFile" }
-    if (proxies.isEmpty()) {
+    val timeoutMillis = config.timeoutSeconds * 1_000
+    logger.info { "Loaded ${config.rules.size} rule(s) from $configFile" }
+    if (config.rules.isEmpty()) {
         logger.error { "No rule found in config file: $configFile" }
-        return
+        exitProcess(1)
     }
-    proxies.forEach { (port, proxy) ->
-        logger.info { "Proxy: port=$port -> ${proxy.upstreamBaseUrl}" }
+    config.rules.forEach { rule ->
+        logger.info { "Proxy: port=${rule.listenPort} -> ${rule.upstreamUrl}" }
     }
 
+    val clientEngine = createClientEngine()
     val server = try {
         embeddedServer(
             ServerCIO,
             configure = {
-                proxies.keys.forEach { listenPort -> connector { port = listenPort } }
+                config.rules.forEach { rule -> connector { port = rule.listenPort } }
             }
         ) {
-            configureProxyServer(proxies)
+            monitor.subscribe(ApplicationStopping) { clientEngine.close() }
+            configureProxyServer(clientEngine, config.rules, timeoutMillis)
         }.start()
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
+        clientEngine.close()
+
         tailrec fun unwrapRootCause(e: Throwable): Throwable {
             val cause = e.cause ?: return e
             if (cause === e) return e
@@ -93,7 +96,31 @@ fun main(args: Array<String>) {
     }
 }
 
-internal fun Application.configureProxyServer(proxies: Map<Int, ResponsesApiProxy>) {
+/**
+ * Installs a catch-all route that proxies all incoming requests to the upstream servers
+ * defined in [rules].
+ *
+ * For each request, selects the proxy implementation based on the request path:
+ * paths ending with `/responses` use [ResponsesApiProxy]; all other paths use
+ * [ChatCompletionsApiProxy] (which falls through to [AbstractApiProxy.passthrough]
+ * for non-`/chat/completions` paths).
+ *
+ * Proxy instances are lazily created and cached by `(listen port, proxy class)`.
+ * Requests with `stream=true` are not converted and are passed through unchanged.
+ *
+ * @param clientEngine shared [HttpClientEngine] for all upstream connections
+ * @param rules the proxy rules, each mapping a listen port to an upstream base URL
+ * @param timeoutMillis upstream request timeout in milliseconds
+ */
+internal fun Application.configureProxyServer(
+    clientEngine: HttpClientEngine,
+    rules: List<ProxyRule>,
+    timeoutMillis: Long,
+) {
+    val ruleCache = rules.associateBy { it.listenPort }
+    val proxyCache = mutableMapOf<Pair<Int, KClass<out AbstractApiProxy>>, AbstractApiProxy>()
+    val proxyCacheLock = SynchronizedObject()
+
     install(HttpRequestLifecycle) {
         cancelCallOnClose = true
     }
@@ -104,10 +131,26 @@ internal fun Application.configureProxyServer(proxies: Map<Int, ResponsesApiProx
                 val startMark = timeSource.markNow()
                 call.attributes.put(RequestStartMarkKey, startMark)
 
-                val proxy = proxies.getValue(call.request.local.localPort)
+                val port = call.request.local.localPort
+                val uri = call.request.uri
+                val path = uri.substringBefore('?').trimEnd('/')
+                val proxyClass: KClass<out AbstractApiProxy> = if (path.endsWith("/responses")) {
+                    ResponsesApiProxy::class
+                } else {
+                    ChatCompletionsApiProxy::class
+                }
+
+                val proxy = synchronized(proxyCacheLock) {
+                    proxyCache.getOrPut(port to proxyClass) {
+                        val rule = ruleCache.getValue(port)
+                        when (proxyClass) {
+                            ResponsesApiProxy::class -> ResponsesApiProxy(clientEngine, rule.upstreamUrl, timeoutMillis)
+                            else -> ChatCompletionsApiProxy(clientEngine, rule.upstreamUrl, timeoutMillis)
+                        }
+                    }
+                }
 
                 val method = call.request.httpMethod
-                val uri = call.request.uri
                 val upstreamUrl = proxy.upstreamBaseUrl.trimEnd('/') + uri
 
                 logger.info { "Request [${call.request.host()}:${call.request.port()} -> ${upstreamUrl}] ${method.value} $uri" }

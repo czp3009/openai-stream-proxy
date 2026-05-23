@@ -5,13 +5,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 ## Build & Test
 
 ```bash
-./gradlew build                              # build all modules
-./gradlew :proxy:jvmTest                     # proxy tests only
-./gradlew :cli:jvmTest                       # cli tests only
-./gradlew test                               # all tests
+./gradlew :proxy:compileKotlinJvm            # compile proxy (JVM only, fast)
+./gradlew :cli:compileKotlinJvm              # compile cli (JVM only, fast)
+./gradlew :proxy:jvmTest                     # proxy tests (JVM only)
+./gradlew :cli:jvmTest                       # cli tests (JVM only)
+./gradlew build                              # build all modules (all platforms, slow)
+./gradlew test                               # all tests (all platforms, slow)
 ```
 
 JVM toolchain: 21. Kotlin `2.3.21`, Ktor `3.5.0`.
+
+Several modules are Kotlin Multiplatform projects targeting multiple platforms (JVM, mingwX64, linuxX64,
+macOSArm64, etc.). Building all platforms is slow. To check whether code compiles or to run tests, **JVM
+only is sufficient** — prefer the JVM-only commands above over `build` and `test`.
 
 ## Running Modules
 
@@ -70,20 +76,31 @@ Kotlin Multiplatform project using Gradle version catalogs.
   Also contains `OpenAiErrors` (utility for building OpenAI-compatible error responses),
   `SseAccumulator` (interface for SSE event accumulators),
   `ChatCompletionsAccumulator` (implements `SseAccumulator`, merges streamed Chat Completions SSE
-  deltas into a single non-streaming JSON response — not yet wired into a proxy),
+  deltas into a single non-streaming JSON response, used by `ChatCompletionsApiProxy`),
   and `ResponseAccumulator` (implements `SseAccumulator`, used by `ResponsesApiProxy`).
+  `ChatCompletionsApiProxy` extends `AbstractApiProxy` and handles Chat Completions conversion:
+  downstream non-streaming `POST /v1/chat/completions` requests are rewritten to upstream
+  `stream: true` with `stream_options.include_usage=true`, the upstream SSE is consumed by
+  `ChatCompletionsAccumulator` (which merges chunk deltas and waits for `data: [DONE]`),
+  the final `chat.completion` JSON is assembled in memory, and a non-streaming JSON response
+  is returned downstream with HTTP 200. Requests that do not match the conversion criteria are
+  passed through unchanged via `passthrough()`.
 - **cli** - CLI wrapper for `proxy`. Reads a JSON config file (via `--config-file`, default `config.json`)
   with the structure `{"timeoutSeconds": 600, "rules": [{"listenPort": 8080, "upstreamUrl": "..."}]}`,
   starts one Ktor CIO server per config rule (each listening on a different port). All requests are
-  handled by a catch-all `route("/{...}")`; POST requests with `/responses` path and JSON content type
-  go to `proxy.proxy()` (which internally checks for `model` and `stream=true`), all others go to
-  `proxy.passthrough()`. Both return `OutgoingContent?`; null → 502 `upstream_error` (via
-  `OpenAiErrors.errorResponse()`), exceptions → 500 `internal_error` via StatusPages
-  (`ErrorHandler.kt` uses `CancellationException`-aware handler). Platform-specific shutdown:
-  JVM uses `Runtime.addShutdownHook`, native registers `SIGTERM`/`SIGINT` handlers; servers stopped
-  with 2s grace / 5s timeout. Uses `kotlinx-cli` for argument parsing and the `shadow` Gradle plugin
-  for JVM fat JAR packaging. Targets JVM, mingwX64, linuxX64, macosArm64 (not linuxArm64 —
-  `kotlinx-cli` doesn't support it).
+  handled by a catch-all `route("/{...}")` that selects the proxy implementation based on the request
+  path: paths ending with `/responses` use `ResponsesApiProxy`, all other paths use
+  `ChatCompletionsApiProxy` (which falls through to passthrough for non-`/chat/completions` paths).
+  Proxy instances are lazily created and cached by `(listen port, proxy class)` with
+  `kotlinx-atomicfu` `synchronized` for thread safety. A single `HttpClientEngine` is shared across
+  all proxy instances and closed on server shutdown via the `ApplicationStopping` monitor event.
+  Both `proxy()` and `passthrough()` return `OutgoingContent?`; null → 502 `upstream_error`
+  (via `OpenAiErrors.errorResponse()`), exceptions → 500 `internal_error` via StatusPages
+  (`ErrorHandler.kt` uses `CancellationException`-aware handler). Platform-specific shutdown: JVM uses
+  `Runtime.addShutdownHook`, native registers `SIGTERM`/`SIGINT` handlers; servers stopped
+  with 2s grace / 5s timeout. Uses `kotlinx-cli` for argument parsing, `kotlinx-atomicfu` for
+  cross-platform synchronization, and the `shadow` Gradle plugin for JVM fat JAR packaging. Targets
+  JVM, mingwX64, linuxX64, macosArm64 (not linuxArm64 — `kotlinx-cli` doesn't support it).
 
 #### Auxiliary
 
@@ -104,12 +121,13 @@ Kotlin Multiplatform project using Gradle version catalogs.
 ### Key Patterns
 
 - `proxy` is engine-agnostic and depends only on common Ktor client/I/O APIs.
-- `proxy` only converts synchronous non-streaming `POST /v1/responses` requests.
+- `proxy` converts synchronous non-streaming `POST /v1/responses` requests (via `ResponsesApiProxy`)
+  and `POST /v1/chat/completions` requests (via `ChatCompletionsApiProxy`).
 - Requests with `stream=true` are not converted and must be passed through unchanged.
-- For the supported conversion path, `proxy` aggregates the final `Response` state in memory and only then writes
+- For the supported conversion paths, `proxy` aggregates the final state in memory and only then writes
   the downstream non-streaming JSON response. It does not stream partial JSON fragments downstream.
-- `ResponsesApiProxy` extends `AbstractApiProxy`; subclasses implement `needConvert()`,
-  `rewriteBody()`, `createAccumulator()`, and `buildResult()` for protocol-specific conversion.
+- `ResponsesApiProxy` and `ChatCompletionsApiProxy` extend `AbstractApiProxy`; subclasses implement
+  `needConvert()`, `rewriteBody()`, `createAccumulator()`, and `buildResult()` for protocol-specific conversion.
 - `ResponseAccumulator` and `ChatCompletionsAccumulator` both implement the `SseAccumulator` interface.
   They are not thread-safe — `accumulate()` must be called from a single coroutine.
 - `cli` uses CIO engine everywhere (client and server), no HTTPS support.
@@ -120,5 +138,5 @@ Kotlin Multiplatform project using Gradle version catalogs.
 - `sniffer`, `mock-client-responses`, and `mock-client-chat-completions` are JVM executables with code in `commonMain`
   and `mainClass.set(...)` in the JVM block.
 - Test SSE fixtures are in `commonTest/resources` under each module's package path.
-- Tests use real Ktor CIO servers on ephemeral ports (`ServerSocket(0)`) — no mocks.
-- `proxy` tests additionally use the `openai-java` SDK as the downstream client for end-to-end verification.
+- Tests use real Ktor CIO servers on ephemeral ports (`ServerSocket(0)`) with Ktor CIO clients
+  for HTTP-level end-to-end verification — no mocks or SDK clients.

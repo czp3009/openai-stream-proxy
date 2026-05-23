@@ -6,6 +6,7 @@ kotlinx-serialization = "1.11.0"
 ktor = "3.5.0"
 logback = "1.5.32"
 kotlinx-cli = "0.3.6"
+kotlinx-atomicfu = "0.32.1"
 openai-java = "4.36.0"
 
 shadow = "9.4.1"
@@ -25,10 +26,12 @@ ktor-server-cio = { module = "io.ktor:ktor-server-cio", version.ref = "ktor" }
 ktor-server-status-pages = { module = "io.ktor:ktor-server-status-pages", version.ref = "ktor" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 kotlinx-cli = { module = "org.jetbrains.kotlinx:kotlinx-cli", version.ref = "kotlinx-cli" }
+kotlinx-atomicfu = { module = "org.jetbrains.kotlinx:atomicfu", version.ref = "kotlinx-atomicfu" }
 openai-java = { module = "com.openai:openai-java", version.ref = "openai-java" }
 openai-java-okhttp = { module = "com.openai:openai-java-client-okhttp", version.ref = "openai-java" }
 
 [plugins]
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+atomicfu = { id = "org.jetbrains.kotlinx.atomicfu", version.ref = "kotlinx-atomicfu" }
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }

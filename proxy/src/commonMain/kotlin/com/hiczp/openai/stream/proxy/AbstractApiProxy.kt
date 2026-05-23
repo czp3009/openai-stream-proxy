@@ -28,6 +28,13 @@ import kotlinx.serialization.json.jsonPrimitive
  * SSE-specific processing. Subclasses implement [needConvert], [rewriteBody], [createAccumulator],
  * and [buildResult] to define protocol-specific conversion logic.
  *
+ * ## Resource lifecycle
+ *
+ * The [HttpClientEngine] provided via [engine] is **not** owned by this class. The caller is
+ * responsible for closing the engine when it is no longer needed (e.g. on application shutdown).
+ * Do **not** call [HttpClient.close] on the internal client — doing so would shut down the shared
+ * engine and break any other clients using it.
+ *
  * @param engine the HTTP client engine used for upstream requests
  * @param upstreamBaseUrl the base URL of the upstream OpenAI-compatible server (e.g. `https://api.openai.com`)
  * @param timeoutMillis timeout in milliseconds for request, connect, and socket operations (default 10 minutes)
