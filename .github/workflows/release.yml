@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_release: ${{ steps.release-check.outputs.should_release }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Cache Gradle/JVM and Kotlin/Native
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Read project version
+        id: version
+        run: |
+          version="$(./gradlew -q --console=plain :printRootVersion)"
+
+          if [[ -z "$version" || "$version" == "unspecified" ]]; then
+            echo "Invalid project version: $version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Project version: $version" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check release version
+        id: release-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: .github/scripts/check-release-version.sh
+
+  release:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Cache Gradle/JVM and Kotlin/Native
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Build JVM fat JAR
+        run: ./gradlew :cli:shadowJar
+
+      - name: Build native executables
+        run: |
+          ./gradlew \
+            :cli:linkReleaseExecutableLinuxX64 \
+            :cli:linkReleaseExecutableMingwX64
+
+      - name: Collect release assets
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          mkdir -p release-assets
+
+          jar="cli/build/libs/openai-stream-proxy-${VERSION}-fat.jar"
+          linux="cli/build/bin/linuxX64/releaseExecutable/openai-stream-proxy-${VERSION}-linuxX64"
+          windows="cli/build/bin/mingwX64/releaseExecutable/openai-stream-proxy-${VERSION}-mingwX64.exe"
+
+          test -f "$jar"
+          test -f "$linux"
+          test -f "$windows"
+
+          cp "$jar" "$linux" "$windows" release-assets/
+
+          find release-assets -maxdepth 1 -type f -print | sort
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: .github/scripts/create-release.sh
