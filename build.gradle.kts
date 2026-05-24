@@ -1,3 +1,4 @@
+import com.hiczp.gradle.PrintRootVersionTask
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.plugin.KotlinMultiplatformPluginWrapper
 
@@ -18,4 +19,10 @@ subprojects {
             jvmToolchain(21)
         }
     }
+}
+
+tasks.register<PrintRootVersionTask>("printRootVersion") {
+    group = "help"
+    description = "Prints rootProject.version only."
+    rootVersion.set(rootProject.version.toString())
 }
