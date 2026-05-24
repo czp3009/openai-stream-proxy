@@ -6,6 +6,10 @@ stream in memory, and returns a non-streaming response to the downstream client.
 Supports the **Responses API** (`/v1/responses`) and **Chat Completions API** (`/v1/chat/completions`). Requests already
 using `stream=true` are passed through unchanged.
 
+This project only converts between non-streaming and streaming modes. It does not support protocol conversion, including
+but not limited to converting the Responses protocol to the Chat Completions protocol, or converting the Responses
+protocol to the Anthropic protocol.
+
 ## Usage
 
 Download executables from the [releases page](./releases) or [build from source](#build).

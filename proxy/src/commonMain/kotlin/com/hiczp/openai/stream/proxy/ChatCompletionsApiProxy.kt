@@ -29,7 +29,7 @@ class ChatCompletionsApiProxy(
     upstreamBaseUrl: String,
     timeoutMillis: Long = 600_000L,
 ) : AbstractApiProxy(engine, upstreamBaseUrl, timeoutMillis) {
-    override val logger = KotlinLogging.logger {}
+    override val logger = KotlinLogging.logger("com.hiczp.openai.stream.proxy.ChatCompletionsApiProxy")
 
     override fun needConvert(method: HttpMethod, path: String): Boolean =
         method == HttpMethod.Post && path.endsWith("/chat/completions")
