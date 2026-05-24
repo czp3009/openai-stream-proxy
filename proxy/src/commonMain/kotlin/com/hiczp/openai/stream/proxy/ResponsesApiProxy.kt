@@ -78,7 +78,7 @@ class ResponsesApiProxy(
             }
         }
 
-        logger.debug { "Convert completed: $statusCode ($terminalType)" }
+        logger.debug { "Convert completed: status=${statusCode.value} terminal=$terminalType bytes=${responseBytes.size}" }
         return object : OutgoingContent.ByteArrayContent() {
             override val contentLength = responseBytes.size.toLong()
             override val status = statusCode

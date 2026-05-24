@@ -59,7 +59,7 @@ class ChatCompletionsApiProxy(
             }
         }
 
-        logger.debug { "Convert completed: ${responseBytes.size} bytes" }
+        logger.debug { "Convert completed: status=${HttpStatusCode.OK.value} terminal=DONE bytes=${responseBytes.size}" }
         return object : OutgoingContent.ByteArrayContent() {
             override val contentLength = responseBytes.size.toLong()
             override val status = HttpStatusCode.OK
