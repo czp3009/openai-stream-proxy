@@ -12,6 +12,7 @@ import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.util.*
 import io.ktor.utils.io.*
+import kotlinx.coroutines.flow.any
 import kotlinx.io.IOException
 import kotlinx.io.readByteArray
 import kotlinx.serialization.json.Json
@@ -178,7 +179,10 @@ abstract class AbstractApiProxy(
                 this.setBody(rewrittenBody.toString())
             }) {
                 sessionHeaders = call.response.headers
-                incoming.collect { event -> accumulator.accumulate(event) }
+                incoming.any { event ->
+                    accumulator.accumulate(event)
+                    accumulator.isTerminated
+                }
             }
         } catch (e: SSEClientException) {
             val response = e.response

@@ -52,7 +52,10 @@ class ChatCompletionsAccumulator : SseAccumulator {
      * Events are processed until a final response is assembled; subsequent calls are no-ops.
      */
     override fun accumulate(event: ServerSentEvent) {
-        if (isTerminated) return
+        if (isTerminated) {
+            logger.trace { "Dropping event after termination: ${event.event}" }
+            return
+        }
 
         val data = event.data ?: return
         if (data.trim() == "[DONE]") {
