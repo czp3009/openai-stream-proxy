@@ -10,15 +10,15 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Transparent proxy that converts downstream non-streaming OpenAI Chat Completions API requests into
- * upstream SSE streaming requests, aggregates the SSE events in memory, and returns a downstream
+ * upstream SSE streaming requests, aggregates the SSE events in memory, and sends a downstream
  * response that behaves like the non-streaming Chat Completions API.
  *
  * The upstream SSE is consumed by [ChatCompletionsAccumulator], which merges streamed chunk deltas
  * into a single `chat.completion` JSON object. The terminal marker is `data: [DONE]`.
  *
  * Upstream responses that fail before the SSE stream starts are relayed as-is. Network failures,
- * SSE client failures, and SSE streams without a terminal `[DONE]` event return `null` so the caller
- * can choose the downstream error response.
+ * SSE client failures, and SSE streams without a terminal `[DONE]` event are handled by
+ * [AbstractApiProxy] as upstream errors.
  *
  * Requests that do not match the conversion criteria (non-POST method, non-`/chat/completions` path,
  * non-JSON content type, missing `model` field, or `stream=true`) are forwarded to the
@@ -44,8 +44,8 @@ class ChatCompletionsApiProxy(
     override fun createAccumulator(): SseAccumulator = ChatCompletionsAccumulator()
 
     @Suppress("DuplicatedCode")
-    override fun buildResult(accumulator: SseAccumulator, sessionHeaders: Headers): OutgoingContent? {
-        val chatAccumulator = accumulator as? ChatCompletionsAccumulator ?: return null
+    override fun buildResult(accumulator: SseAccumulator, sessionHeaders: Headers): OutgoingContent {
+        val chatAccumulator = accumulator as ChatCompletionsAccumulator
         val response = chatAccumulator.response
         val responseBytes = response.toString().encodeToByteArray()
 

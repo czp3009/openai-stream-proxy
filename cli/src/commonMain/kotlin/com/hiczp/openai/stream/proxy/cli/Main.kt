@@ -2,10 +2,10 @@ package com.hiczp.openai.stream.proxy.cli
 
 import com.hiczp.openai.stream.proxy.AbstractApiProxy
 import com.hiczp.openai.stream.proxy.ChatCompletionsApiProxy
-import com.hiczp.openai.stream.proxy.OpenAiErrors
 import com.hiczp.openai.stream.proxy.ResponsesApiProxy
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.engine.*
+import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.http.*
@@ -155,19 +155,12 @@ internal fun Application.configureProxyServer(
 
                 logger.info { "Request [${call.request.host()}:${call.request.port()} -> ${upstreamUrl}] ${method.value} $uri" }
 
-                val result = proxy.proxy(method, uri, call.request.headers, call.receiveChannel())
-
-                val statusCode = if (result != null) {
-                    call.respond(result)
-                    result.status
-                } else {
-                    val errorResponse = OpenAiErrors.errorResponse(
-                        message = "Upstream returned incomplete or invalid response",
-                        type = "upstream_error",
-                    )
-                    call.respond(errorResponse)
-                    errorResponse.status
+                var statusCode: HttpStatusCode? = null
+                proxy.proxy(method, uri, call.request.headers, call.receiveChannel()) { response ->
+                    statusCode = response.status
+                    call.respond(response)
                 }
+
                 val elapsed = startMark.elapsedNow().toInt(DurationUnit.MILLISECONDS)
                 logger.info { "Request completed: ${method.value} $upstreamUrl ${statusCode?.value ?: "<UnknownStatus>"} (${elapsed}ms)" }
             }

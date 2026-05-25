@@ -27,6 +27,7 @@ kotlin {
         jvmTest.dependencies {
             implementation(libs.ktor.server.core)
             implementation(libs.ktor.server.cio)
+            implementation(libs.ktor.server.sse)
             implementation(libs.ktor.client.cio)
             implementation(libs.logback.classic)
         }

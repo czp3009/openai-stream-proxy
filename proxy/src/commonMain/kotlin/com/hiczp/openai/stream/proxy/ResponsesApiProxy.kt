@@ -9,7 +9,7 @@ import kotlinx.serialization.json.*
 
 /**
  * Transparent proxy that converts downstream non-streaming OpenAI Responses API requests into
- * upstream SSE streaming requests, aggregates the SSE events in memory, and returns a downstream
+ * upstream SSE streaming requests, aggregates the SSE events in memory, and sends a downstream
  * response that behaves like the non-streaming Responses API.
  *
  * Terminal `response.completed` and `response.incomplete` events are returned as normal
@@ -20,8 +20,8 @@ import kotlinx.serialization.json.*
  * an error object without `error.code` still produces an error body but leaves the HTTP status
  * as `200 OK`.
  * Upstream responses that fail before the SSE stream starts are relayed as-is. Network failures,
- * SSE client failures, and SSE streams without a terminal event return `null` so the caller can
- * choose the downstream error response.
+ * SSE client failures, and SSE streams without a terminal event are handled by [AbstractApiProxy]
+ * as upstream errors.
  *
  * Requests that do not match the conversion criteria (non-POST method, non-`/responses` path,
  * non-JSON content type, missing `model` field, or `stream=true`) are forwarded to the
@@ -43,10 +43,11 @@ class ResponsesApiProxy(
     override fun createAccumulator(): SseAccumulator = ResponseAccumulator()
 
     @Suppress("DuplicatedCode")
-    override fun buildResult(accumulator: SseAccumulator, sessionHeaders: Headers): OutgoingContent? {
-        val responseAccumulator = accumulator as? ResponseAccumulator ?: return null
+    override fun buildResult(accumulator: SseAccumulator, sessionHeaders: Headers): OutgoingContent {
+        val responseAccumulator = accumulator as ResponseAccumulator
         val response = responseAccumulator.response
-        val terminalType = responseAccumulator.terminalType ?: return null
+        val terminalType =
+            responseAccumulator.terminalType ?: error("Response accumulator terminated without terminal type")
         val failedError = if (terminalType == ResponseAccumulator.TerminalType.FAILED) {
             response["error"]?.jsonObject
         } else {

@@ -64,13 +64,14 @@ Kotlin Multiplatform project using Gradle version catalogs.
   the upstream SSE is consumed by `ResponseAccumulator` (which collects `response.output_item.done`
   events and waits for a terminal event: `response.completed`, `response.failed`, or
   `response.incomplete`), the final `Response` state is assembled in memory, and a non-streaming
-  JSON response is returned downstream.
+  JSON response is sent downstream.
   Requests that do not match the conversion criteria (non-POST, non-`/responses` path, non-JSON
   content type, missing `model` field, or `stream=true`) are passed through unchanged via
   `passthrough()`.
   When the upstream returns a non-SSE error response during the SSE connect phase, it is relayed
-  as-is. Returns `OutgoingContent?` — null signals an upstream failure (incomplete stream, network
-  error); exceptions signal proxy bugs (caller should map to 500). Depends on `ktor-client-core`,
+  as-is. `proxy()` receives a `respond` callback and writes downstream responses internally;
+  upstream failures (incomplete stream, network error) are converted to 502 `upstream_error`.
+  Exceptions signal proxy bugs (caller should map to 500). Depends on `ktor-client-core`,
   `ktor-http`, `ktor-io`, `kotlinx-serialization-json`, and `kotlin-logging`. No platform-specific
   engines; consumers provide the engine.
   Also contains `OpenAiErrors` (utility for building OpenAI-compatible error responses),
@@ -83,7 +84,7 @@ Kotlin Multiplatform project using Gradle version catalogs.
   `stream: true` with `stream_options.include_usage=true`, the upstream SSE is consumed by
   `ChatCompletionsAccumulator` (which merges chunk deltas and waits for `data: [DONE]`),
   the final `chat.completion` JSON is assembled in memory, and a non-streaming JSON response
-  is returned downstream with HTTP 200. Requests that do not match the conversion criteria are
+  is sent downstream with HTTP 200. Requests that do not match the conversion criteria are
   passed through unchanged via `passthrough()`.
 - **cli** - CLI wrapper for `proxy`. Reads a JSON config file (via `--config-file`, default `config.json`)
   with the structure `{"timeoutSeconds": 600, "rules": [{"listenPort": 8080, "upstreamUrl": "..."}]}`,
@@ -94,8 +95,8 @@ Kotlin Multiplatform project using Gradle version catalogs.
   Proxy instances are lazily created and cached by `(listen port, proxy class)` with
   `kotlinx-atomicfu` `synchronized` for thread safety. A single `HttpClientEngine` is shared across
   all proxy instances and closed on server shutdown via the `ApplicationStopping` monitor event.
-  Both `proxy()` and `passthrough()` return `OutgoingContent?`; null → 502 `upstream_error`
-  (via `OpenAiErrors.errorResponse()`), exceptions → 500 `internal_error` via StatusPages
+  `proxy()` injects Ktor's response operation through its `respond` parameter; upstream failures
+  are handled by `AbstractApiProxy`, exceptions → 500 `internal_error` via StatusPages
   (`ErrorHandler.kt` uses `CancellationException`-aware handler). Platform-specific shutdown: JVM uses
   `Runtime.addShutdownHook`, native registers `SIGTERM`/`SIGINT` handlers; servers stopped
   with 2s grace / 5s timeout. Uses `kotlinx-cli` for argument parsing, `kotlinx-atomicfu` for

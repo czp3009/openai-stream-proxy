@@ -17,14 +17,20 @@ private val logger = KotlinLogging.logger("com.hiczp.openai.stream.proxy.cli.Err
 fun Application.installErrorHandler() {
     install(StatusPages) {
         exception<Throwable> { call, throwable ->
+            val elapsed = call.requestElapsedMs()
             if (throwable is CancellationException) {
                 if (!currentCoroutineContext().isActive) {
-                    val elapsed = call.requestElapsedMs()
+                    // HttpRequestLifecycle cancels the call when the downstream connection closes.
+                    // The response cannot be delivered anymore, so only log and stop handling.
                     logger.info { "Request cancelled: ${call.request.uri} (${elapsed}ms)" }
                     return@exception
                 } else {
                     throw throwable
                 }
+            }
+            if (call.response.isCommitted || call.response.isSent) {
+                logger.warn { "Response already started, cannot send fallback error: ${call.request.uri} (${elapsed}ms) [${throwable.message}]" }
+                return@exception
             }
             logger.error { "Internal server error: ${throwable.message}" }
             val errorResponse = OpenAiErrors.errorResponse(
@@ -33,7 +39,6 @@ fun Application.installErrorHandler() {
                 status = HttpStatusCode.InternalServerError,
             )
             call.respond(errorResponse)
-            val elapsed = call.requestElapsedMs()
             logger.info { "${call.request.httpMethod.value} ${call.request.uri} ${errorResponse.status?.value ?: "<UnknownStatus>"} (${elapsed}ms)" }
         }
     }

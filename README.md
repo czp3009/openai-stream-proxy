@@ -1,7 +1,7 @@
 # openai-stream-proxy
 
 A transparent proxy that converts non-streaming OpenAI API requests into upstream SSE streaming requests, aggregates the
-stream in memory, and returns a non-streaming response to the downstream client.
+stream in memory, and sends a non-streaming response to the downstream client.
 
 Supports the **Responses API** (`/v1/responses`) and **Chat Completions API** (`/v1/chat/completions`). Requests already
 using `stream=true` are passed through unchanged.
@@ -134,6 +134,7 @@ import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.engine.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 
@@ -148,29 +149,23 @@ fun main() {
     embeddedServer(ServerCIO, port = 8080) {
         routing {
             post("/v1/responses") {
-                val result = responsesProxy.proxy(
+               responsesProxy.proxy(
                     call.request.httpMethod,
                     call.request.uri,
                     call.request.headers,
                     call.receiveChannel(),
-                )
-                if (result != null) {
-                    call.respond(result)
-                } else {
-                    call.respondText("upstream error", status = HttpStatusCode.BadGateway)
+               ) { response ->
+                  call.respond(response)
                 }
             }
             post("/v1/chat/completions") {
-                val result = chatProxy.proxy(
+               chatProxy.proxy(
                     call.request.httpMethod,
                     call.request.uri,
                     call.request.headers,
                     call.receiveChannel(),
-                )
-                if (result != null) {
-                    call.respond(result)
-                } else {
-                    call.respondText("upstream error", status = HttpStatusCode.BadGateway)
+               ) { response ->
+                  call.respond(response)
                 }
             }
         }
@@ -187,7 +182,7 @@ Each proxy class follows the same flow:
 2. **Rewrite** — Add `stream: true` (and `stream_options` for Chat Completions) to the request body.
 3. **Stream** — Send the rewritten request upstream as an SSE request.
 4. **Aggregate** — Collect SSE events into a single accumulated response in memory.
-5. **Respond** — Return a non-streaming JSON response to the downstream client.
+5. **Respond** — Send a non-streaming JSON response to the downstream client through the injected responder.
 
 Requests that don't match the conversion criteria are forwarded unchanged (passthrough).
 
@@ -198,8 +193,8 @@ Requests that don't match the conversion criteria are forwarded unchanged (passt
 | `ResponsesApiProxy`       | Responses API    | `*/responses`        |
 | `ChatCompletionsApiProxy` | Chat Completions | `*/chat/completions` |
 
-Both extend `AbstractApiProxy`, which provides `passthrough()` for forwarding requests unchanged and
-`stripHopByHopHeaders()` for header cleanup.
+Both extend `AbstractApiProxy`, which provides streaming `passthrough()` for forwarding requests unchanged,
+upstream error responses for failed or invalid upstream streams, and `stripHopByHopHeaders()` for header cleanup.
 
 ### Resource Lifecycle
 

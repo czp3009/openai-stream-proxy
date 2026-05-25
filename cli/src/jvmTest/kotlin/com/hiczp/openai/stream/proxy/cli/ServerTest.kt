@@ -1,6 +1,5 @@
 package com.hiczp.openai.stream.proxy.cli
 
-import com.hiczp.openai.stream.proxy.OpenAiErrors
 import com.hiczp.openai.stream.proxy.ResponsesApiProxy
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
@@ -52,22 +51,13 @@ class ServerTest {
             routing {
                 route("/{...}") {
                     handle {
-                        val result = proxy.proxy(
+                        proxy.proxy(
                             requestMethod = call.request.httpMethod,
                             requestUri = call.request.uri,
                             requestHeaders = call.request.headers,
                             requestBody = call.receiveChannel(),
+                            respond = { call.respond(it) },
                         )
-                        if (result != null) {
-                            call.respond(result)
-                        } else {
-                            call.respond(
-                                OpenAiErrors.errorResponse(
-                                    message = "Upstream returned incomplete or invalid response",
-                                    type = "upstream_error",
-                                )
-                            )
-                        }
                     }
                 }
             }
@@ -118,22 +108,13 @@ class ServerTest {
             routing {
                 route("/{...}") {
                     handle {
-                        val result = proxy.proxy(
+                        proxy.proxy(
                             requestMethod = call.request.httpMethod,
                             requestUri = call.request.uri,
                             requestHeaders = call.request.headers,
                             requestBody = call.receiveChannel(),
+                            respond = { call.respond(it) },
                         )
-                        if (result != null) {
-                            call.respond(result)
-                        } else {
-                            call.respond(
-                                OpenAiErrors.errorResponse(
-                                    message = "Upstream returned incomplete or invalid response",
-                                    type = "upstream_error",
-                                )
-                            )
-                        }
                     }
                 }
             }
@@ -156,7 +137,7 @@ class ServerTest {
     }
 
     @Test
-    fun `returns 500 when upstream is unreachable`() = runBlocking {
+    fun `returns 502 when upstream is unreachable`() = runBlocking {
         val downstreamPort = findFreePort()
         val unreachablePort = findFreePort()
 
@@ -167,22 +148,13 @@ class ServerTest {
             routing {
                 route("/{...}") {
                     handle {
-                        val result = proxy.proxy(
+                        proxy.proxy(
                             requestMethod = call.request.httpMethod,
                             requestUri = call.request.uri,
                             requestHeaders = call.request.headers,
                             requestBody = call.receiveChannel(),
+                            respond = { call.respond(it) },
                         )
-                        if (result != null) {
-                            call.respond(result)
-                        } else {
-                            call.respond(
-                                OpenAiErrors.errorResponse(
-                                    message = "Upstream returned incomplete or invalid response",
-                                    type = "upstream_error",
-                                )
-                            )
-                        }
                     }
                 }
             }
@@ -194,9 +166,9 @@ class ServerTest {
                 contentType(ContentType.Application.Json)
                 setBody(buildJsonObject { put("model", "gpt-4"); put("input", "hello") }.toString())
             }
-            assertEquals(HttpStatusCode.InternalServerError, response.status)
+            assertEquals(HttpStatusCode.BadGateway, response.status)
             val body = response.bodyAsText()
-            assertTrue(body.contains("internal_error"))
+            assertTrue(body.contains("upstream_error"))
         } finally {
             client.close()
             downstreamServer.stop()

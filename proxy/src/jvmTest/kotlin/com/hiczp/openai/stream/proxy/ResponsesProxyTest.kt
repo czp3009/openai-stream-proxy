@@ -97,12 +97,13 @@ class ResponsesProxyTest {
 
     private fun Route.responsesProxyHandler(proxy: ResponsesApiProxy) {
         post("/v1/responses") {
-            val result = try {
+            try {
                 proxy.proxy(
                     requestMethod = call.request.httpMethod,
                     requestUri = call.request.uri,
                     requestHeaders = call.request.headers,
                     requestBody = call.receiveChannel(),
+                    respond = { call.respond(it) },
                 )
             } catch (e: Exception) {
                 return@post call.respond(
@@ -111,13 +112,6 @@ class ResponsesProxyTest {
                         "proxy_error",
                         status = HttpStatusCode.InternalServerError,
                     )
-                )
-            }
-            if (result != null) {
-                call.respond(result)
-            } else {
-                call.respond(
-                    OpenAiErrors.errorResponse("Upstream returned incomplete response", "upstream_error")
                 )
             }
         }
@@ -294,7 +288,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `handler returns 502 when proxy returns null for incomplete SSE stream`() = runBlocking {
+    fun `proxy returns 502 for incomplete SSE stream`() = runBlocking {
         val incompleteSseData = (
                 "event: response.output_item.done\n" +
                         "data: ${
@@ -317,7 +311,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `handler returns 500 when proxy throws exception`() = runBlocking {
+    fun `proxy returns 502 when upstream is unreachable`() = runBlocking {
         val downstreamPort = findFreePort()
         val unreachablePort = findFreePort()
 
@@ -330,9 +324,9 @@ class ResponsesProxyTest {
         try {
             val (status, body) = postResponse(downstreamPort, responsesRequest())
 
-            assertEquals(HttpStatusCode.InternalServerError, status)
+            assertEquals(HttpStatusCode.BadGateway, status)
             val error = body.getValue("error").jsonObject
-            assertEquals("proxy_error", error.getValue("type").jsonPrimitive.content)
+            assertEquals("upstream_error", error.getValue("type").jsonPrimitive.content)
         } finally {
             downstreamServer.stop()
         }

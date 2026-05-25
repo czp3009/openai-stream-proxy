@@ -62,46 +62,44 @@ abstract class AbstractApiProxy(
      * This is a template method that checks whether the request should be converted using
      * [needConvert], validates the request (JSON content type, `model` field, not already streaming),
      * and delegates to [convert] for protocol-specific processing. Requests that do not match the
-     * conversion criteria are forwarded unchanged via [passthrough].
-     *
-     * ## Return value contract
-     *
-     * - **Non-null**: the caller should send the returned [OutgoingContent] to the downstream client
-     *   (e.g. via `call.respond(result)`).
-     * - **Null**: the upstream did not produce a reliable response (network error, upstream failure,
-     *   etc.). The caller should either drop the downstream connection or respond with a status code
-     *   that indicates an upstream error (e.g. 502 Bad Gateway).
+     * conversion criteria are forwarded unchanged via [passthrough]. Responses are sent through
+     * [respond] inside this method so streaming passthrough responses can be consumed while the
+     * upstream response lifecycle is still open.
      *
      * ## Exception contract
      *
      * This method may throw exceptions for unexpected non-network failures while processing the proxy
-     * flow (e.g. malformed upstream data or bugs). The caller should catch such exceptions and return
-     * an error response to the downstream client (e.g. via [OpenAiErrors.errorResponse]).
+     * flow (e.g. accumulator or result assembly bugs). The caller should catch such exceptions and
+     * return an error response to the downstream client (e.g. via [OpenAiErrors.errorResponse]).
      *
      * @param requestMethod the HTTP method of the downstream request
      * @param requestUri the request URI (path and query string) of the downstream request
      * @param requestHeaders the headers of the downstream request
      * @param requestBody the body of the downstream request
+     * @param respond sends a prepared downstream response
      */
     suspend fun proxy(
         requestMethod: HttpMethod,
         requestUri: String,
         requestHeaders: Headers,
         requestBody: ByteReadChannel,
-    ): OutgoingContent? {
+        respond: suspend (OutgoingContent) -> Unit,
+    ) {
         val path = requestUri.substringBefore('?').trimEnd('/')
         val upstreamUrl = upstreamBaseUrl.trimEnd('/') + requestUri
 
         if (!needConvert(requestMethod, path)) {
             logger.debug { "Passthrough: ${requestMethod.value} $requestUri (path not match)" }
-            return passthrough(upstreamUrl, requestMethod, requestHeaders, requestBody)
+            passthrough(upstreamUrl, requestMethod, requestHeaders, requestBody, respond)
+            return
         }
 
         val contentType = requestHeaders[HttpHeaders.ContentType]
             ?.let { runCatching { ContentType.parse(it) }.getOrNull() }
         if (contentType?.match(ContentType.Application.Json) != true) {
             logger.debug { "Passthrough: ${requestMethod.value} $requestUri (non-JSON request)" }
-            return passthrough(upstreamUrl, requestMethod, requestHeaders, requestBody)
+            passthrough(upstreamUrl, requestMethod, requestHeaders, requestBody, respond)
+            return
         }
 
         val bodyBytes = try {
@@ -114,16 +112,18 @@ abstract class AbstractApiProxy(
 
         if (bodyJson !is JsonObject || !bodyJson.contains("model")) {
             logger.debug { "Passthrough: ${requestMethod.value} $requestUri (not a valid API request)" }
-            return passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes)
+            passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes, respond)
+            return
         }
 
         if (bodyJson["stream"]?.jsonPrimitive?.booleanOrNull == true) {
             logger.debug { "Passthrough: ${requestMethod.value} $requestUri (already streaming)" }
-            return passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes)
+            passthrough(upstreamUrl, requestMethod, requestHeaders, bodyBytes, respond)
+            return
         }
 
         logger.debug { "Proxy flow: ${requestMethod.value} $requestUri" }
-        return convert(upstreamUrl, requestHeaders, bodyJson)
+        convert(upstreamUrl, requestHeaders, bodyJson, respond)
     }
 
     /**
@@ -140,28 +140,24 @@ abstract class AbstractApiProxy(
 
     /**
      * Converts a non-streaming request to an upstream SSE stream, aggregates the result, and
-     * returns the downstream response.
+     * sends the downstream response.
      *
      * This is a template method that rewrites the request body via [rewriteBody], sends it upstream
      * as an SSE request, collects events into an accumulator created by [createAccumulator], and
      * delegates result assembly to [buildResult]. SSE error handling (non-SSE upstream response
      * relay, network failure, incomplete stream) is handled here.
      *
-     * ## Return value contract
-     *
-     * - **Non-null**: the caller should send the returned [OutgoingContent] to the downstream client.
-     * - **Null**: the upstream did not produce a reliable response (network error, upstream failure,
-     *   etc.). The caller should respond with a status code that indicates an upstream error.
-     *
      * @param upstreamUrl the full upstream URL to send the rewritten request to
      * @param headers the original downstream request headers
      * @param bodyJson the parsed JSON body of the downstream request
+     * @param respond sends a prepared downstream response
      */
     protected suspend fun convert(
         upstreamUrl: String,
         headers: Headers,
         bodyJson: JsonObject,
-    ): OutgoingContent? {
+        respond: suspend (OutgoingContent) -> Unit,
+    ) {
         val rewrittenBody = rewriteBody(bodyJson)
         val forwardHeaders = stripHopByHopHeaders(headers).filter { key, _ ->
             !key.equals(HttpHeaders.ContentType, ignoreCase = true)
@@ -186,50 +182,47 @@ abstract class AbstractApiProxy(
             }
         } catch (e: SSEClientException) {
             val response = e.response
-            return if (e.cause == null) {
+            val cause = e.cause
+            if (cause == null) {
                 //SSE stream isn't started
                 if (response != null) {
                     //the server responds, but not SSE or status code not 200
                     logger.warn { "Server returned non-SSE response with status ${response.status}" }
-                    val filteredHeaders = response.headers.filter { key, _ ->
-                        !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true)
-                    }
-                    val bodyChannel = response.bodyAsChannel()
-                    object : OutgoingContent.ReadChannelContent() {
-                        override val contentLength = response.contentLength()
-                        override val status = response.status
-                        override val headers = Headers.build { appendAll(filteredHeaders) }
-                        override fun readFrom() = bodyChannel
-                    }
+                    respond(response.toOutgoingContent())
+                    return
                 } else {
                     //impossible
                     logger.warn { "Unexpected SSEClientException for $upstreamUrl: ${e.message}" }
-                    null
+                    respondUpstreamError(respond)
+                    return
                 }
             } else {
-                if (e.cause is SSEClientException) {
-                    //network error, SSE parsing failure, or reconnection exhaustion
-                    logger.warn { "SSE stream failed for $upstreamUrl: ${e.cause?.message}" }
-                    null
+                if (cause is SSEClientException || (response == null && cause is IOException)) {
+                    //network error before the SSE session starts, SSE parsing failure, or reconnection exhaustion
+                    logger.warn { "SSE stream failed for $upstreamUrl: ${cause.message ?: e.message}" }
+                    respondUpstreamError(respond)
+                    return
                 } else {
                     //non-network error (e.g., bug in accumulator)
                     //caller should convert the exception to errorResponse
-                    logger.warn { "Unexpected error for $upstreamUrl: ${e.cause?.message}" }
+                    logger.warn { "Unexpected error for $upstreamUrl: ${cause.message ?: e.message}" }
                     throw e
                 }
             }
         } catch (e: IOException) {
             //other network error
             logger.warn { "SSE request IOException for $upstreamUrl: ${e.message}" }
-            return null
+            respondUpstreamError(respond)
+            return
         }
 
         if (!accumulator.isTerminated) {
             logger.warn { "SSE stream ended without terminal event for $upstreamUrl" }
-            return null
+            respondUpstreamError(respond)
+            return
         }
 
-        return buildResult(accumulator, sessionHeaders ?: return null)
+        respond(buildResult(accumulator, sessionHeaders ?: error("SSE session completed without response headers")))
     }
 
     /**
@@ -260,42 +253,38 @@ abstract class AbstractApiProxy(
      *
      * @param accumulator the accumulator populated with upstream SSE events
      * @param sessionHeaders the headers received from the upstream SSE response
-     * @return the downstream response content, or `null` if a valid response cannot be assembled
+     * @return the downstream response content
      */
     protected abstract fun buildResult(
         accumulator: SseAccumulator,
         sessionHeaders: Headers,
-    ): OutgoingContent?
+    ): OutgoingContent
 
     protected suspend fun passthrough(
         upstreamUrl: String,
         method: HttpMethod,
         headers: Headers,
         body: ByteReadChannel,
-    ): OutgoingContent? {
+        respond: suspend (OutgoingContent) -> Unit,
+    ) {
         val forwardHeaders = stripHopByHopHeaders(headers)
+        var upstreamResponseReceived = false
 
-        val upstreamResponse = try {
-            client.request(upstreamUrl) {
+        try {
+            client.prepareRequest(upstreamUrl) {
                 this.method = method
                 this.headers.appendAll(forwardHeaders)
                 this.setBody(body)
+            }.execute { upstreamResponse ->
+                upstreamResponseReceived = true
+                val responseContent = upstreamResponse.toOutgoingContent()
+                respond(responseContent)
             }
         } catch (e: IOException) {
             logger.warn { "Passthrough request to $upstreamUrl failed: ${e.message}" }
-            return null
-        }
-
-        val filteredHeaders = upstreamResponse.headers.filter { key, _ ->
-            !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true)
-        }
-
-        val bodyChannel = upstreamResponse.bodyAsChannel()
-        return object : OutgoingContent.ReadChannelContent() {
-            override val contentLength = upstreamResponse.contentLength()
-            override val status = upstreamResponse.status
-            override val headers = Headers.build { appendAll(filteredHeaders) }
-            override fun readFrom(): ByteReadChannel = bodyChannel
+            if (!upstreamResponseReceived) {
+                respondUpstreamError(respond)
+            }
         }
     }
 
@@ -304,7 +293,30 @@ abstract class AbstractApiProxy(
         method: HttpMethod,
         headers: Headers,
         bodyBytes: ByteArray,
-    ): OutgoingContent? = passthrough(upstreamUrl, method, headers, ByteReadChannel(bodyBytes))
+        respond: suspend (OutgoingContent) -> Unit,
+    ) = passthrough(upstreamUrl, method, headers, ByteReadChannel(bodyBytes), respond)
+
+    private suspend fun respondUpstreamError(respond: suspend (OutgoingContent) -> Unit) {
+        respond(
+            OpenAiErrors.errorResponse(
+                message = "Upstream returned incomplete or invalid response",
+                type = "upstream_error",
+            )
+        )
+    }
+
+    private fun HttpResponse.toOutgoingContent(): OutgoingContent {
+        val response = this
+        val filteredHeaders = stripHopByHopHeaders(response.headers)
+        return object : OutgoingContent.WriteChannelContent() {
+            override val contentLength = response.contentLength()
+            override val status = response.status
+            override val headers = Headers.build { appendAll(filteredHeaders) }
+            override suspend fun writeTo(channel: ByteWriteChannel) {
+                response.bodyAsChannel().copyTo(channel)
+            }
+        }
+    }
 
     companion object {
         private val hopByHopHeaderNames = setOf(
