@@ -14,5 +14,5 @@ fi
 find release-assets -maxdepth 1 -type f -print | sort
 gh release create "$VERSION" release-assets/* \
   --title "$VERSION" \
-  --notes "Release $VERSION" \
+  --generate-notes \
   --target "$GITHUB_SHA"
