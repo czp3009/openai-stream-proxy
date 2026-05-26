@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import io.ktor.server.cio.CIO as ServerCIO
 
 class ResponsesProxyTest {
@@ -216,6 +217,9 @@ class ResponsesProxyTest {
         val upstreamHeaders = Headers.build {
             append("X-Upstream-Request-Id", "req_failed")
             append("Retry-After", "3")
+            append(HttpHeaders.Connection, "X-Remove-Me")
+            append("X-Remove-Me", "should-not-forward")
+            append("Keep-Alive", "timeout=5")
         }
 
         withProxyForSse(failedResponseSse("rate_limit_exceeded"), upstreamHeaders) { downstreamPort ->
@@ -224,10 +228,21 @@ class ResponsesProxyTest {
                 contentType(ContentType.Application.Json)
                 setBody(responsesRequest())
             }
+            val bodyText = response.bodyAsText()
 
             assertEquals(HttpStatusCode.TooManyRequests, response.status)
             assertEquals("req_failed", response.headers["X-Upstream-Request-Id"])
             assertEquals("3", response.headers["Retry-After"])
+            assertNull(response.headers["X-Remove-Me"])
+            assertNull(response.headers["Keep-Alive"])
+            assertEquals(
+                listOf(bodyText.encodeToByteArray().size.toString()),
+                response.headers.getAll(HttpHeaders.ContentLength),
+            )
+            assertEquals(
+                listOf(ContentType.Application.Json.toString()),
+                response.headers.getAll(HttpHeaders.ContentType),
+            )
             assertEquals(ContentType.Application.Json, response.contentType()?.withoutParameters())
         }
     }

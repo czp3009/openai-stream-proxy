@@ -69,19 +69,17 @@ class ResponsesApiProxy(
             response.toString().encodeToByteArray()
         }
 
-        val responseHeaders = sessionHeaders.filter { key, _ ->
-            !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true) &&
-                    !key.equals(HttpHeaders.ContentType, ignoreCase = true)
-        }.let {
-            Headers.build {
-                appendAll(it)
-                append(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-            }
+        val responseHeaders = Headers.build {
+            appendAll(stripHopByHopHeaders(sessionHeaders).filter { key, _ ->
+                !key.equals(HttpHeaders.ContentType, ignoreCase = true) &&
+                        !key.equals(HttpHeaders.ContentEncoding, ignoreCase = true)
+            })
         }
 
         logger.debug { "Convert completed: status=${statusCode.value} terminal=$terminalType bytes=${responseBytes.size}" }
         return object : OutgoingContent.ByteArrayContent() {
             override val contentLength = responseBytes.size.toLong()
+            override val contentType = ContentType.Application.Json
             override val status = statusCode
             override val headers = responseHeaders
             override fun bytes() = responseBytes

@@ -1022,6 +1022,9 @@ class ChatCompletionsProxyTest {
     fun `upstream headers are preserved in convert flow`() = runBlocking {
         val upstreamHeaders = Headers.build {
             append("X-Request-Id", "req-123")
+            append(HttpHeaders.Connection, "X-Remove-Me")
+            append("X-Remove-Me", "should-not-forward")
+            append("Keep-Alive", "timeout=5")
         }
 
         withProxyForSse(sseResponseText, upstreamHeaders) { downstreamPort ->
@@ -1030,9 +1033,20 @@ class ChatCompletionsProxyTest {
                 contentType(ContentType.Application.Json)
                 setBody(chatCompletionsRequest())
             }
+            val bodyText = response.bodyAsText()
 
             assertEquals(HttpStatusCode.OK, response.status)
             assertEquals("req-123", response.headers["X-Request-Id"])
+            assertNull(response.headers["X-Remove-Me"])
+            assertNull(response.headers["Keep-Alive"])
+            assertEquals(
+                listOf(bodyText.encodeToByteArray().size.toString()),
+                response.headers.getAll(HttpHeaders.ContentLength),
+            )
+            assertEquals(
+                listOf(ContentType.Application.Json.toString()),
+                response.headers.getAll(HttpHeaders.ContentType),
+            )
             assertEquals(ContentType.Application.Json, response.contentType()?.withoutParameters())
         }
     }
@@ -1064,6 +1078,11 @@ class ChatCompletionsProxyTest {
             assertNull(response.headers["X-Remove-Me"])
             assertNull(response.headers["Keep-Alive"])
             assertNull(response.headers[HttpHeaders.Upgrade])
+            assertEquals(
+                listOf(ContentType.Text.Plain.toString()),
+                response.headers.getAll(HttpHeaders.ContentType),
+            )
+            assertEquals(ContentType.Text.Plain, response.contentType()?.withoutParameters())
             assertEquals("ok", response.bodyAsText())
         }
     }

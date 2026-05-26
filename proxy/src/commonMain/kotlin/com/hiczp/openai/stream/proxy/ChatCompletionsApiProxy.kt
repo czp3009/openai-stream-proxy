@@ -49,19 +49,17 @@ class ChatCompletionsApiProxy(
         val response = chatAccumulator.response
         val responseBytes = response.toString().encodeToByteArray()
 
-        val responseHeaders = sessionHeaders.filter { key, _ ->
-            !key.equals(HttpHeaders.TransferEncoding, ignoreCase = true) &&
-                    !key.equals(HttpHeaders.ContentType, ignoreCase = true)
-        }.let {
-            Headers.build {
-                appendAll(it)
-                append(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-            }
+        val responseHeaders = Headers.build {
+            appendAll(stripHopByHopHeaders(sessionHeaders).filter { key, _ ->
+                !key.equals(HttpHeaders.ContentType, ignoreCase = true) &&
+                        !key.equals(HttpHeaders.ContentEncoding, ignoreCase = true)
+            })
         }
 
         logger.debug { "Convert completed: status=${HttpStatusCode.OK.value} terminal=DONE bytes=${responseBytes.size}" }
         return object : OutgoingContent.ByteArrayContent() {
             override val contentLength = responseBytes.size.toLong()
+            override val contentType = ContentType.Application.Json
             override val status = HttpStatusCode.OK
             override val headers = responseHeaders
             override fun bytes() = responseBytes

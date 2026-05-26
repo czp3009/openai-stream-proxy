@@ -307,9 +307,12 @@ abstract class AbstractApiProxy(
 
     private fun HttpResponse.toOutgoingContent(): OutgoingContent {
         val response = this
-        val filteredHeaders = stripHopByHopHeaders(response.headers)
+        val filteredHeaders = stripHopByHopHeaders(response.headers).filter { key, _ ->
+            !key.equals(HttpHeaders.ContentType, ignoreCase = true)
+        }
         return object : OutgoingContent.WriteChannelContent() {
             override val contentLength = response.contentLength()
+            override val contentType = response.contentType()
             override val status = response.status
             override val headers = Headers.build { appendAll(filteredHeaders) }
             override suspend fun writeTo(channel: ByteWriteChannel) {
@@ -332,7 +335,7 @@ abstract class AbstractApiProxy(
             "upgrade",
         )
 
-        private fun stripHopByHopHeaders(headers: Headers): StringValues {
+        internal fun stripHopByHopHeaders(headers: Headers): StringValues {
             val connectionHeaders = headers[HttpHeaders.Connection]
                 ?.split(",")
                 ?.map { it.trim().lowercase() }
