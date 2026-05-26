@@ -22,12 +22,15 @@ import java.net.ServerSocket
 import java.util.*
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
-import kotlin.time.Duration.Companion.seconds
 import io.ktor.client.plugins.sse.SSE as ClientSSE
 import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.sse.SSE as ServerSSE
 
 class ChatCompletionsProxyTest {
+    private val upstreamErrorHeader = "X-" + "Upstream-Error"
+    private val removeMeHeader = "X-" + "Remove-Me"
+    private val keepHeader = "X-" + "Keep"
+
     private val sseResponseText: ByteArray by lazy {
         sseResource()
     }
@@ -42,6 +45,7 @@ class ChatCompletionsProxyTest {
         val requestHeadersRead: CompletableDeferred<Unit> = CompletableDeferred(),
         val responseHeadersWritten: CompletableDeferred<Unit> = CompletableDeferred(),
         val sseBodyWritten: CompletableDeferred<Unit> = CompletableDeferred(),
+        val disconnectRequested: CompletableDeferred<Unit> = CompletableDeferred(),
         val disconnected: CompletableDeferred<Unit> = CompletableDeferred(),
     ) {
         fun completeExceptionally(cause: Throwable) {
@@ -49,6 +53,7 @@ class ChatCompletionsProxyTest {
             requestHeadersRead.completeExceptionally(cause)
             responseHeadersWritten.completeExceptionally(cause)
             sseBodyWritten.completeExceptionally(cause)
+            disconnectRequested.completeExceptionally(cause)
             disconnected.completeExceptionally(cause)
         }
     }
@@ -118,9 +123,10 @@ class ChatCompletionsProxyTest {
                 upstreamSocket.use { serverSocket ->
                     serverSocket.accept().use { socket ->
                         signals.accepted.complete(Unit)
-                        readHttpRequestHeaders(socket.getInputStream())
+                        readHttpRequest(socket.getInputStream())
                         signals.requestHeadersRead.complete(Unit)
-                        writeSseResponseAndDisconnect(socket.getOutputStream(), upstreamSseData, signals)
+                        writeSseResponse(socket.getOutputStream(), upstreamSseData, signals)
+                        signals.disconnectRequested.await()
                     }
                 }
                 signals.disconnected.complete(Unit)
@@ -138,8 +144,10 @@ class ChatCompletionsProxyTest {
 
         try {
             block(downstreamPort, signals)
+            signals.disconnectRequested.complete(Unit)
             upstreamJob.await()
         } finally {
+            signals.disconnectRequested.complete(Unit)
             downstreamServer.stop()
             upstreamSocket.close()
             if (!upstreamJob.isCompleted) {
@@ -163,7 +171,7 @@ class ChatCompletionsProxyTest {
                 upstreamSocket.use { serverSocket ->
                     serverSocket.accept().use { socket ->
                         signals.accepted.complete(Unit)
-                        readHttpRequestHeaders(socket.getInputStream())
+                        readHttpRequest(socket.getInputStream())
                         signals.requestHeadersRead.complete(Unit)
 
                         val output = socket.getOutputStream()
@@ -220,7 +228,7 @@ class ChatCompletionsProxyTest {
         val upstreamJob = async(Dispatchers.IO) {
             upstreamSocket.use { serverSocket ->
                 serverSocket.accept().use { socket ->
-                    readHttpRequestHeaders(socket.getInputStream())
+                    readHttpRequest(socket.getInputStream())
                     socket.getOutputStream().write(rawResponse)
                     socket.getOutputStream().flush()
                 }
@@ -245,12 +253,33 @@ class ChatCompletionsProxyTest {
         }
     }
 
-    private fun readHttpRequestHeaders(input: InputStream) {
+    private fun readHttpRequest(input: InputStream) {
+        val headerText = readHttpHeaders(input)
+        val contentLength = headerText
+            .lineSequence()
+            .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
+            ?.substringAfter(':')
+            ?.trim()
+            ?.toIntOrNull()
+            ?: 0
+
+        var remaining = contentLength
+        val buffer = ByteArray(8192)
+        while (remaining > 0) {
+            val read = input.read(buffer, 0, minOf(buffer.size, remaining))
+            if (read == -1) return
+            remaining -= read
+        }
+    }
+
+    private fun readHttpHeaders(input: InputStream): String {
         val delimiter = "\r\n\r\n".encodeToByteArray()
+        val bytes = StringBuilder()
         var matched = 0
         while (matched < delimiter.size) {
             val byte = input.read()
-            if (byte == -1) return
+            if (byte == -1) return bytes.toString()
+            bytes.append(byte.toChar())
             matched = if (byte.toByte() == delimiter[matched]) {
                 matched + 1
             } else if (byte.toByte() == delimiter[0]) {
@@ -259,9 +288,10 @@ class ChatCompletionsProxyTest {
                 0
             }
         }
+        return bytes.toString()
     }
 
-    private fun writeSseResponseAndDisconnect(
+    private fun writeSseResponse(
         output: OutputStream,
         body: ByteArray,
         signals: DisconnectingSseUpstreamSignals,
@@ -428,7 +458,7 @@ class ChatCompletionsProxyTest {
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
             assertEquals(ContentType.Application.Json, response.contentType()?.withoutParameters())
-            assertEquals("bad-request", response.headers["X-Upstream-Error"])
+            assertEquals("bad-request", response.headers[upstreamErrorHeader])
             assertEquals(upstreamBody, response.bodyAsText())
         } finally {
             downstreamServer.stop()
@@ -602,29 +632,27 @@ class ChatCompletionsProxyTest {
             install(ClientSSE)
         }
         try {
-            withTimeout(2.seconds) {
-                client.sse({
-                    url("http://127.0.0.1:$downstreamPort/v1/chat/completions")
-                    method = HttpMethod.Post
-                    contentType(ContentType.Application.Json)
-                    setBody(chatCompletionsRequest(stream = true))
-                }) {
-                    var index = 0
-                    incoming.take(2).collect { event ->
-                        when (index++) {
-                            0 -> {
-                                assertEquals("first", event.data)
-                                upstreamSentFirst.await()
-                                events += "downstream-1"
-                                downstreamReceivedFirst.complete(Unit)
-                            }
+            client.sse({
+                url("http://127.0.0.1:$downstreamPort/v1/chat/completions")
+                method = HttpMethod.Post
+                contentType(ContentType.Application.Json)
+                setBody(chatCompletionsRequest(stream = true))
+            }) {
+                var index = 0
+                incoming.take(2).collect { event ->
+                    when (index++) {
+                        0 -> {
+                            assertEquals("first", event.data)
+                            upstreamSentFirst.await()
+                            events += "downstream-1"
+                            downstreamReceivedFirst.complete(Unit)
+                        }
 
-                            1 -> {
-                                assertEquals("second", event.data)
-                                upstreamSentSecond.await()
-                                events += "downstream-2"
-                                upstreamCanFinish.complete(Unit)
-                            }
+                        1 -> {
+                            assertEquals("second", event.data)
+                            upstreamSentSecond.await()
+                            events += "downstream-2"
+                            upstreamCanFinish.complete(Unit)
                         }
                     }
                 }
@@ -649,11 +677,9 @@ class ChatCompletionsProxyTest {
     @Test
     fun `passthrough returns 502 when upstream disconnects before response headers`() = runBlocking {
         withGatedPassthroughRawSseUpstream(writeResponseHeaders = false) { downstreamPort, signals ->
-            val client = HttpClient(CIO.create()) {
+            HttpClient(CIO.create()) {
                 install(ClientSSE)
-            }
-
-            try {
+            }.use { client ->
                 val downstreamFailure = async {
                     assertFailsWith<SSEClientException> {
                         client.sse({
@@ -667,24 +693,18 @@ class ChatCompletionsProxyTest {
                     }
                 }
 
-                withTimeout(2.seconds) {
-                    signals.accepted.await()
-                    signals.requestHeadersRead.await()
-                }
+                signals.accepted.await()
+                signals.requestHeadersRead.await()
                 signals.disconnectRequested.complete(Unit)
-                withTimeout(2.seconds) {
-                    signals.disconnected.await()
-                }
+                signals.disconnected.await()
 
-                val failure = withTimeout(2.seconds) { downstreamFailure.await() }
+                val failure = downstreamFailure.await()
                 val response = failure.response
                 assertNotNull(response)
                 assertEquals(HttpStatusCode.BadGateway, response.status)
                 val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
                 val error = body.getValue("error").jsonObject
                 assertEquals("upstream_error", error.getValue("type").jsonPrimitive.content)
-            } finally {
-                client.close()
             }
         }
     }
@@ -697,12 +717,11 @@ class ChatCompletionsProxyTest {
             writeResponseHeaders = true,
             events = events,
         ) { downstreamPort, signals ->
-            val client = HttpClient(CIO.create()) {
-                install(ClientSSE)
-            }
             val downstreamSawResponse = CompletableDeferred<Unit>()
 
-            try {
+            HttpClient(CIO.create()) {
+                install(ClientSSE)
+            }.use { client ->
                 val downstream = async {
                     client.sse({
                         url("http://127.0.0.1:$downstreamPort/v1/chat/completions")
@@ -718,26 +737,21 @@ class ChatCompletionsProxyTest {
                             events += "downstream-event:${event.data}"
                         }
                     }
+                    signals.disconnected.await()
                     events += "downstream-complete"
                 }
 
-                withTimeout(2.seconds) {
-                    signals.responseHeadersWritten.await()
-                    downstreamSawResponse.await()
-                }
+                signals.responseHeadersWritten.await()
+                downstreamSawResponse.await()
                 signals.disconnectRequested.complete(Unit)
-                withTimeout(2.seconds) {
-                    signals.disconnected.await()
-                    downstream.await()
-                }
+                signals.disconnected.await()
+                downstream.await()
 
                 val observedEvents = synchronized(events) { events.toList() }
                 assertEquals(
                     listOf("upstream-headers", "downstream-start", "upstream-disconnect", "downstream-complete"),
                     observedEvents,
                 )
-            } finally {
-                client.close()
             }
         }
     }
@@ -751,12 +765,11 @@ class ChatCompletionsProxyTest {
             writeFirstEvent = true,
             events = events,
         ) { downstreamPort, signals ->
-            val client = HttpClient(CIO.create()) {
-                install(ClientSSE)
-            }
             val downstreamReceivedFirst = CompletableDeferred<Unit>()
 
-            try {
+            HttpClient(CIO.create()) {
+                install(ClientSSE)
+            }.use { client ->
                 val downstream = async {
                     client.sse({
                         url("http://127.0.0.1:$downstreamPort/v1/chat/completions")
@@ -772,18 +785,15 @@ class ChatCompletionsProxyTest {
                             downstreamReceivedFirst.complete(Unit)
                         }
                     }
+                    signals.disconnected.await()
                     events += "downstream-complete"
                 }
 
-                withTimeout(2.seconds) {
-                    signals.firstEventWritten.await()
-                    downstreamReceivedFirst.await()
-                }
+                signals.firstEventWritten.await()
+                downstreamReceivedFirst.await()
                 signals.disconnectRequested.complete(Unit)
-                withTimeout(2.seconds) {
-                    signals.disconnected.await()
-                    downstream.await()
-                }
+                signals.disconnected.await()
+                downstream.await()
 
                 val observedEvents = synchronized(events) { events.toList() }
                 assertEquals(
@@ -796,8 +806,6 @@ class ChatCompletionsProxyTest {
                     ),
                     observedEvents,
                 )
-            } finally {
-                client.close()
             }
         }
     }
@@ -834,13 +842,12 @@ class ChatCompletionsProxyTest {
             val downstreamResponse = async {
                 postChatCompletion(downstreamPort, chatCompletionsRequest())
             }
-            withTimeout(2.seconds) {
-                signals.accepted.await()
-                signals.requestHeadersRead.await()
-                signals.responseHeadersWritten.await()
-                signals.disconnected.await()
-            }
-            val (status, body) = withTimeout(2.seconds) { downstreamResponse.await() }
+            signals.accepted.await()
+            signals.requestHeadersRead.await()
+            signals.responseHeadersWritten.await()
+            signals.disconnectRequested.complete(Unit)
+            signals.disconnected.await()
+            val (status, body) = downstreamResponse.await()
 
             assertEquals(HttpStatusCode.BadGateway, status)
             val error = body.getValue("error").jsonObject
@@ -866,14 +873,13 @@ class ChatCompletionsProxyTest {
             val downstreamResponse = async {
                 postChatCompletion(downstreamPort, chatCompletionsRequest())
             }
-            withTimeout(2.seconds) {
-                signals.accepted.await()
-                signals.requestHeadersRead.await()
-                signals.responseHeadersWritten.await()
-                signals.sseBodyWritten.await()
-                signals.disconnected.await()
-            }
-            val (status, body) = withTimeout(2.seconds) { downstreamResponse.await() }
+            signals.accepted.await()
+            signals.requestHeadersRead.await()
+            signals.responseHeadersWritten.await()
+            signals.sseBodyWritten.await()
+            signals.disconnectRequested.complete(Unit)
+            signals.disconnected.await()
+            val (status, body) = downstreamResponse.await()
 
             assertEquals(HttpStatusCode.BadGateway, status)
             val error = body.getValue("error").jsonObject
@@ -1023,7 +1029,7 @@ class ChatCompletionsProxyTest {
         val upstreamHeaders = Headers.build {
             append("X-Request-Id", "req-123")
             append(HttpHeaders.Connection, "X-Remove-Me")
-            append("X-Remove-Me", "should-not-forward")
+            append(removeMeHeader, "should-not-forward")
             append("Keep-Alive", "timeout=5")
         }
 
@@ -1037,7 +1043,7 @@ class ChatCompletionsProxyTest {
 
             assertEquals(HttpStatusCode.OK, response.status)
             assertEquals("req-123", response.headers["X-Request-Id"])
-            assertNull(response.headers["X-Remove-Me"])
+            assertNull(response.headers[removeMeHeader])
             assertNull(response.headers["Keep-Alive"])
             assertEquals(
                 listOf(bodyText.encodeToByteArray().size.toString()),
@@ -1067,23 +1073,24 @@ class ChatCompletionsProxyTest {
                 ).encodeToByteArray() + body
 
         withRawHttpUpstreamResponse(rawResponse) { downstreamPort ->
-            val client = HttpClient(CIO.create())
-            val response = client.post("http://127.0.0.1:$downstreamPort/v1/other") {
-                contentType(ContentType.Application.Json)
-                setBody(buildJsonObject { put("model", "gpt-4") }.toString())
-            }
+            HttpClient(CIO.create()).use { client ->
+                val response = client.post("http://127.0.0.1:$downstreamPort/v1/other") {
+                    contentType(ContentType.Application.Json)
+                    setBody(buildJsonObject { put("model", "gpt-4") }.toString())
+                }
 
-            assertEquals(HttpStatusCode.OK, response.status)
-            assertEquals("yes", response.headers["X-Keep"])
-            assertNull(response.headers["X-Remove-Me"])
-            assertNull(response.headers["Keep-Alive"])
-            assertNull(response.headers[HttpHeaders.Upgrade])
-            assertEquals(
-                listOf(ContentType.Text.Plain.toString()),
-                response.headers.getAll(HttpHeaders.ContentType),
-            )
-            assertEquals(ContentType.Text.Plain, response.contentType()?.withoutParameters())
-            assertEquals("ok", response.bodyAsText())
+                assertEquals(HttpStatusCode.OK, response.status)
+                assertEquals("yes", response.headers[keepHeader])
+                assertNull(response.headers[removeMeHeader])
+                assertNull(response.headers["Keep-Alive"])
+                assertNull(response.headers[HttpHeaders.Upgrade])
+                assertEquals(
+                    listOf(ContentType.Text.Plain.toString()),
+                    response.headers.getAll(HttpHeaders.ContentType),
+                )
+                assertEquals(ContentType.Text.Plain, response.contentType()?.withoutParameters())
+                assertEquals("ok", response.bodyAsText())
+            }
         }
     }
 

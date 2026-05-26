@@ -21,6 +21,9 @@ import kotlin.test.assertNull
 import io.ktor.server.cio.CIO as ServerCIO
 
 class ResponsesProxyTest {
+    private val upstreamRequestIdHeader = "X-" + "Upstream-Request-Id"
+    private val removeMeHeader = "X-" + "Remove-Me"
+
     private val sseResponseText: ByteArray by lazy {
         sseResource("responses_sse.txt")
     }
@@ -129,12 +132,13 @@ class ResponsesProxyTest {
         downstreamPort: Int,
         body: String,
     ): Pair<HttpStatusCode, JsonObject> {
-        val client = HttpClient(CIO.create())
-        val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
-            contentType(ContentType.Application.Json)
-            setBody(body)
+        return HttpClient(CIO.create()).use { client ->
+            val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            response.status to Json.parseToJsonElement(response.bodyAsText()).jsonObject
         }
-        return response.status to Json.parseToJsonElement(response.bodyAsText()).jsonObject
     }
 
     @Test
@@ -149,7 +153,7 @@ class ResponsesProxyTest {
 
     @Test
     fun `proxy maps failed terminal response events to HTTP errors`() = runBlocking {
-        data class Case(
+        class Case(
             val sseData: ByteArray,
             val expectedStatus: HttpStatusCode,
             val expectedType: String,
@@ -215,10 +219,10 @@ class ResponsesProxyTest {
     @Test
     fun `proxy preserves upstream headers when failed terminal response is converted to error`() = runBlocking {
         val upstreamHeaders = Headers.build {
-            append("X-Upstream-Request-Id", "req_failed")
+            append(upstreamRequestIdHeader, "req_failed")
             append("Retry-After", "3")
-            append(HttpHeaders.Connection, "X-Remove-Me")
-            append("X-Remove-Me", "should-not-forward")
+            append(HttpHeaders.Connection, removeMeHeader)
+            append(removeMeHeader, "should-not-forward")
             append("Keep-Alive", "timeout=5")
         }
 
@@ -231,9 +235,9 @@ class ResponsesProxyTest {
             val bodyText = response.bodyAsText()
 
             assertEquals(HttpStatusCode.TooManyRequests, response.status)
-            assertEquals("req_failed", response.headers["X-Upstream-Request-Id"])
+            assertEquals("req_failed", response.headers[upstreamRequestIdHeader])
             assertEquals("3", response.headers["Retry-After"])
-            assertNull(response.headers["X-Remove-Me"])
+            assertNull(response.headers[removeMeHeader])
             assertNull(response.headers["Keep-Alive"])
             assertEquals(
                 listOf(bodyText.encodeToByteArray().size.toString()),

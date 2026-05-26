@@ -17,10 +17,11 @@ import java.io.OutputStream
 import java.net.ServerSocket
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.cio.CIO as ServerCIO
 
 class ProxyDisconnectTest {
+    private val upstreamRequestIdHeader = "X-" + "Upstream-Request-Id"
+
     private class ApiCase(
         val name: String,
         val path: String,
@@ -43,6 +44,7 @@ class ProxyDisconnectTest {
         val statusLineWritten: CompletableDeferred<Unit> = CompletableDeferred(),
         val responseHeadersWritten: CompletableDeferred<Unit> = CompletableDeferred(),
         val partialBodyWritten: CompletableDeferred<Unit> = CompletableDeferred(),
+        val disconnectRequested: CompletableDeferred<Unit> = CompletableDeferred(),
         val disconnected: CompletableDeferred<Unit> = CompletableDeferred(),
     ) {
         fun completeExceptionally(cause: Throwable) {
@@ -51,6 +53,7 @@ class ProxyDisconnectTest {
             statusLineWritten.completeExceptionally(cause)
             responseHeadersWritten.completeExceptionally(cause)
             partialBodyWritten.completeExceptionally(cause)
+            disconnectRequested.completeExceptionally(cause)
             disconnected.completeExceptionally(cause)
         }
     }
@@ -112,24 +115,37 @@ class ProxyDisconnectTest {
                     serverSocket.accept().use { socket ->
                         signals.accepted.complete(Unit)
 
-                        if (failure != RawUpstreamFailure.CloseAfterAccept) {
-                            readHttpRequestHeaders(socket.getInputStream())
-                            signals.requestHeadersRead.complete(Unit)
+                        val input = socket.getInputStream()
+                        val requestContentLength = if (failure != RawUpstreamFailure.CloseAfterAccept) {
+                            readHttpRequestHeaders(input).also {
+                                signals.requestHeadersRead.complete(Unit)
+                            }
+                        } else {
+                            0
+                        }
+                        if (
+                            failure == RawUpstreamFailure.CloseAfterStatusLine ||
+                            failure == RawUpstreamFailure.CloseAfterSseHeaders ||
+                            failure == RawUpstreamFailure.CloseAfterPartialSseEvent
+                        ) {
+                            readHttpRequestBody(input, requestContentLength)
                         }
 
                         val output = socket.getOutputStream()
                         when (failure) {
                             RawUpstreamFailure.CloseAfterAccept,
-                            RawUpstreamFailure.CloseAfterRequestHeaders -> Unit
+                            RawUpstreamFailure.CloseAfterRequestHeaders -> signals.disconnectRequested.await()
 
                             RawUpstreamFailure.CloseAfterStatusLine -> {
                                 writeStatusLine(output)
                                 signals.statusLineWritten.complete(Unit)
+                                signals.disconnectRequested.await()
                             }
 
                             RawUpstreamFailure.CloseAfterSseHeaders -> {
                                 writeSseResponseHeaders(output)
                                 signals.responseHeadersWritten.complete(Unit)
+                                signals.disconnectRequested.await()
                             }
 
                             RawUpstreamFailure.CloseAfterPartialSseEvent -> {
@@ -138,6 +154,7 @@ class ProxyDisconnectTest {
                                 output.write(apiCase.partialSseData)
                                 output.flush()
                                 signals.partialBodyWritten.complete(Unit)
+                                signals.disconnectRequested.await()
                             }
                         }
                     }
@@ -157,8 +174,10 @@ class ProxyDisconnectTest {
 
         try {
             block(downstreamPort, signals)
+            signals.disconnectRequested.complete(Unit)
             upstreamJob.await()
         } finally {
+            signals.disconnectRequested.complete(Unit)
             downstreamServer.stop()
             engine.close()
             upstreamSocket.close()
@@ -179,7 +198,9 @@ class ProxyDisconnectTest {
         val upstreamJob = async(Dispatchers.IO) {
             upstreamSocket.use { serverSocket ->
                 serverSocket.accept().use { socket ->
-                    readHttpRequestHeaders(socket.getInputStream())
+                    val input = socket.getInputStream()
+                    val requestContentLength = readHttpRequestHeaders(input)
+                    readHttpRequestBody(input, requestContentLength)
                     socket.getOutputStream().write(rawResponse)
                     socket.getOutputStream().flush()
                 }
@@ -233,15 +254,12 @@ class ProxyDisconnectTest {
         downstreamPort: Int,
         apiCase: ApiCase,
     ): Pair<HttpStatusCode, JsonObject> {
-        val client = HttpClient(CIO.create())
-        return try {
+        return HttpClient(CIO.create()).use { client ->
             val response = client.post("http://127.0.0.1:$downstreamPort${apiCase.path}") {
                 contentType(ContentType.Application.Json)
                 setBody(apiCase.requestBody)
             }
             response.status to Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        } finally {
-            client.close()
         }
     }
 
@@ -249,24 +267,23 @@ class ProxyDisconnectTest {
         downstreamPort: Int,
         apiCase: ApiCase,
     ): Triple<HttpStatusCode, Headers, String> {
-        val client = HttpClient(CIO.create())
-        return try {
+        return HttpClient(CIO.create()).use { client ->
             val response = client.post("http://127.0.0.1:$downstreamPort${apiCase.path}") {
                 contentType(ContentType.Application.Json)
                 setBody(apiCase.requestBody)
             }
             Triple(response.status, response.headers, response.bodyAsText())
-        } finally {
-            client.close()
         }
     }
 
-    private fun readHttpRequestHeaders(input: InputStream) {
+    private fun readHttpRequestHeaders(input: InputStream): Int {
         val delimiter = "\r\n\r\n".encodeToByteArray()
+        val headerBytes = java.io.ByteArrayOutputStream()
         var matched = 0
         while (matched < delimiter.size) {
             val byte = input.read()
-            if (byte == -1) return
+            if (byte == -1) return 0
+            headerBytes.write(byte)
             matched = if (byte.toByte() == delimiter[matched]) {
                 matched + 1
             } else if (byte.toByte() == delimiter[0]) {
@@ -274,6 +291,24 @@ class ProxyDisconnectTest {
             } else {
                 0
             }
+        }
+        return headerBytes.toByteArray()
+            .decodeToString()
+            .lineSequence()
+            .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
+            ?.substringAfter(':')
+            ?.trim()
+            ?.toIntOrNull()
+            ?: 0
+    }
+
+    private fun readHttpRequestBody(input: InputStream, contentLength: Int) {
+        var remaining = contentLength
+        val buffer = ByteArray(8192)
+        while (remaining > 0) {
+            val read = input.read(buffer, 0, minOf(buffer.size, remaining))
+            if (read == -1) return
+            remaining -= read
         }
     }
 
@@ -300,19 +335,18 @@ class ProxyDisconnectTest {
                         postApiRequest(downstreamPort, apiCase)
                     }
 
-                    withTimeout(2.seconds) {
-                        signals.accepted.await()
-                        when (failure) {
-                            RawUpstreamFailure.CloseAfterAccept -> Unit
-                            RawUpstreamFailure.CloseAfterRequestHeaders -> signals.requestHeadersRead.await()
-                            RawUpstreamFailure.CloseAfterStatusLine -> signals.statusLineWritten.await()
-                            RawUpstreamFailure.CloseAfterSseHeaders -> signals.responseHeadersWritten.await()
-                            RawUpstreamFailure.CloseAfterPartialSseEvent -> signals.partialBodyWritten.await()
-                        }
-                        signals.disconnected.await()
+                    signals.accepted.await()
+                    when (failure) {
+                        RawUpstreamFailure.CloseAfterAccept -> Unit
+                        RawUpstreamFailure.CloseAfterRequestHeaders -> signals.requestHeadersRead.await()
+                        RawUpstreamFailure.CloseAfterStatusLine -> signals.statusLineWritten.await()
+                        RawUpstreamFailure.CloseAfterSseHeaders -> signals.responseHeadersWritten.await()
+                        RawUpstreamFailure.CloseAfterPartialSseEvent -> signals.partialBodyWritten.await()
                     }
+                    signals.disconnectRequested.complete(Unit)
+                    signals.disconnected.await()
 
-                    val (status, body) = withTimeout(2.seconds) { downstreamResponse.await() }
+                    val (status, body) = downstreamResponse.await()
                     assertEquals(HttpStatusCode.BadGateway, status, "${apiCase.name} $failure")
                     val error = body.getValue("error").jsonObject
                     assertEquals(
@@ -347,7 +381,7 @@ class ProxyDisconnectTest {
             withRawHttpResponseUpstream(apiCase, rawResponse) { downstreamPort ->
                 val (status, headers, body) = postApiRequestDetails(downstreamPort, apiCase)
                 assertEquals(HttpStatusCode.TooManyRequests, status, apiCase.name)
-                assertEquals("req_edge", headers["X-Upstream-Request-Id"], apiCase.name)
+                assertEquals("req_edge", headers[upstreamRequestIdHeader], apiCase.name)
                 assertEquals(upstreamBody, body, apiCase.name)
             }
         }

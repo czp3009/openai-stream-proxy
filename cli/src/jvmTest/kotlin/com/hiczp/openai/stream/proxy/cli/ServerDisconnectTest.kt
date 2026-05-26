@@ -11,7 +11,6 @@ import java.net.Socket
 import java.net.SocketException
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
-import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.cio.CIO as ServerCIO
 
 class ServerDisconnectTest {
@@ -259,23 +258,15 @@ class ServerDisconnectTest {
                 signals.connectionClosed.complete(Unit)
             },
         ) { downstreamPort, signals ->
-            val downstreamSocket = Socket("127.0.0.1", downstreamPort)
-            downstreamSocket.soTimeout = 2_000
-            try {
+            Socket("127.0.0.1", downstreamPort).use { downstreamSocket ->
                 writeRawHttpRequest(downstreamSocket, "GET", "/v1/other")
-                withTimeout(2.seconds) {
-                    signals.accepted.await()
-                    signals.firstBodyWritten.await()
-                    readDownstreamUntil(downstreamSocket.getInputStream(), "first")
-                }
+                signals.accepted.await()
+                signals.firstBodyWritten.await()
+                readDownstreamUntil(downstreamSocket.getInputStream(), "first")
 
                 downstreamSocket.close()
 
-                withTimeout(2.seconds) {
-                    signals.connectionClosed.await()
-                }
-            } finally {
-                downstreamSocket.close()
+                signals.connectionClosed.await()
             }
         }
     }

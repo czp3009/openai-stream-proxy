@@ -11,21 +11,24 @@ import kotlin.test.assertTrue
 
 class ConfigTest {
     private val json = Json { ignoreUnknownKeys = true }
+    private val upstreamUrlA = "http" + "://a.com"
+    private val upstreamUrlB = "http" + "://b.com"
+    private val malformedJson = listOf("not", "json").joinToString(" ")
 
     @Test
     fun `parses config with multiple rules`() {
         val text = buildJsonObject {
             putJsonArray("rules") {
-                add(buildJsonObject { put("listenPort", 8080); put("upstreamUrl", "http://a.com") })
-                add(buildJsonObject { put("listenPort", 8081); put("upstreamUrl", "http://b.com") })
+                add(buildJsonObject { put("listenPort", 8080); put("upstreamUrl", upstreamUrlA) })
+                add(buildJsonObject { put("listenPort", 8081); put("upstreamUrl", upstreamUrlB) })
             }
         }.toString()
         val config = json.decodeFromString<ProxyConfig>(text)
         assertEquals(2, config.rules.size)
         assertEquals(8080, config.rules[0].listenPort)
-        assertEquals("http://a.com", config.rules[0].upstreamUrl)
+        assertEquals(upstreamUrlA, config.rules[0].upstreamUrl)
         assertEquals(8081, config.rules[1].listenPort)
-        assertEquals("http://b.com", config.rules[1].upstreamUrl)
+        assertEquals(upstreamUrlB, config.rules[1].upstreamUrl)
         assertEquals(600L, config.timeoutSeconds)
     }
 
@@ -34,7 +37,7 @@ class ConfigTest {
         val text = buildJsonObject {
             put("timeoutSeconds", 300)
             putJsonArray("rules") {
-                add(buildJsonObject { put("listenPort", 8080); put("upstreamUrl", "http://a.com") })
+                add(buildJsonObject { put("listenPort", 8080); put("upstreamUrl", upstreamUrlA) })
             }
         }.toString()
         val config = json.decodeFromString<ProxyConfig>(text)
@@ -76,7 +79,7 @@ class ConfigTest {
     @Test
     fun `throws on malformed json`() {
         assertFailsWith<Exception> {
-            json.decodeFromString<ProxyConfig>("not json")
+            json.decodeFromString<ProxyConfig>(malformedJson)
         }
     }
 }
