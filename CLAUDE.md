@@ -19,6 +19,9 @@ Several modules are Kotlin Multiplatform projects targeting multiple platforms (
 macOSArm64, etc.). Building all platforms is slow. To check whether code compiles or to run tests, **JVM
 only is sufficient** — prefer the JVM-only commands above over `build` and `test`.
 
+If the `version` in the root `build.gradle.kts` is updated, also update the version numbers in the README.md
+examples to match.
+
 ## Running Modules
 
 Modules require environment variables that are configured in IDEA run configurations. When running any module,

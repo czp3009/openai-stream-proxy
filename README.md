@@ -12,7 +12,8 @@ protocol to the Anthropic protocol.
 
 ## Usage
 
-Download executables from the [releases page](./releases) or [build from source](#build).
+Download executables from the [releases page](https://github.com/czp3009/openai-stream-proxy/releases)
+or [build from source](#build).
 
 Create `config.json` in the working directory:
 
@@ -75,23 +76,23 @@ The request path is appended to `upstreamUrl`, so `upstreamUrl` typically should
 Then run the executable with the config file in place. For JVM:
 
 ```bash
-java -jar openai-stream-proxy-0.0.1-fat.jar
+java -jar openai-stream-proxy-0.0.3-fat.jar
 ```
 
 For native (Linux):
 
 ```bash
-./openai-stream-proxy-0.0.1-linuxX64
+./openai-stream-proxy-0.0.3-linuxX64.kexe
 ```
 
 The proxy reads `config.json` from the working directory by default. To use a different path:
 
 ```bash
-java -jar openai-stream-proxy-0.0.1-fat.jar --config-file /path/to/config.json
+java -jar openai-stream-proxy-0.0.3-fat.jar --config-file /path/to/config.json
 # or
-java -jar openai-stream-proxy-0.0.1-fat.jar -c /path/to/config.json
+java -jar openai-stream-proxy-0.0.3-fat.jar -c /path/to/config.json
 # same with native executable
-./openai-stream-proxy-0.0.1-linuxX64 --config-file /path/to/config.json
+./openai-stream-proxy-0.0.3-linuxX64.kexe --config-file /path/to/config.json
 ```
 
 ## Build
@@ -118,7 +119,7 @@ provide the Ktor `HttpClientEngine`, and the library handles request rewriting, 
 
 ```kotlin
 dependencies {
-    implementation("com.hiczp:openai-stream-proxy:0.0.1")
+    implementation("com.hiczp:openai-stream-proxy:0.0.3")
 }
 ```
 
