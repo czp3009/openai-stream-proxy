@@ -424,6 +424,62 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
+    fun `proxy preserves existing stream options when enabling usage in upstream request`() = runBlocking {
+        val upstreamPort = findFreePort()
+        val downstreamPort = findFreePort()
+        val capturedBody = AtomicReference<String>()
+
+        val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
+            routing {
+                post("/v1/chat/completions") {
+                    capturedBody.set(call.receiveText())
+                    call.respond(object : OutgoingContent.ByteArrayContent() {
+                        override val contentType = ContentType("text", "event-stream")
+                        override fun bytes() = sseResponseText
+                    })
+                }
+            }
+        }.start()
+
+        val proxy = ChatCompletionsApiProxy(CIO.create(), "http://127.0.0.1:$upstreamPort")
+        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+            routing { chatCompletionsProxyHandler(proxy) }
+        }.start()
+
+        try {
+            val requestBody = buildJsonObject {
+                put("model", "gpt-4")
+                putJsonArray("messages") {
+                    add(buildJsonObject {
+                        put("role", "user")
+                        put("content", "Hello")
+                    })
+                }
+                putJsonObject("stream_options") {
+                    put("include_usage", false)
+                    put("custom_provider_option", "keep-me")
+                    putJsonObject("nested") {
+                        put("enabled", true)
+                    }
+                }
+            }.toString()
+
+            val (status, _) = postChatCompletion(downstreamPort, requestBody)
+
+            assertEquals(HttpStatusCode.OK, status)
+            val forwardedBody = Json.parseToJsonElement(capturedBody.get()).jsonObject
+            val streamOptions = forwardedBody.getValue("stream_options").jsonObject
+            assertEquals(true, forwardedBody.getValue("stream").jsonPrimitive.boolean)
+            assertEquals(true, streamOptions.getValue("include_usage").jsonPrimitive.boolean)
+            assertEquals("keep-me", streamOptions.getValue("custom_provider_option").jsonPrimitive.content)
+            assertEquals(true, streamOptions.getValue("nested").jsonObject.getValue("enabled").jsonPrimitive.boolean)
+        } finally {
+            downstreamServer.stop()
+            upstreamServer.stop()
+        }
+    }
+
+    @Test
     fun `proxy relays non-SSE upstream response from convert flow`() = runBlocking {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()

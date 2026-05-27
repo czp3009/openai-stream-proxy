@@ -38,7 +38,11 @@ class ChatCompletionsApiProxy(
         JsonObject(buildMap {
             putAll(bodyJson)
             put("stream", JsonPrimitive(true))
-            put("stream_options", JsonObject(mapOf("include_usage" to JsonPrimitive(true))))
+            val streamOptions = bodyJson["stream_options"] as? JsonObject
+            put(
+                "stream_options",
+                JsonObject(streamOptions.orEmpty() + ("include_usage" to JsonPrimitive(true))),
+            )
         })
 
     override fun createAccumulator(): SseAccumulator = ChatCompletionsAccumulator()
