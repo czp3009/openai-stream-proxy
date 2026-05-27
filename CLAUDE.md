@@ -44,7 +44,7 @@ Current run configurations and their expected environment variables:
   `OPENAI_MODEL`, `OPENAI_PROMPT` (optional)
 - **mock-client-chat-completions [jvm] stream** / **mock-client-chat-completions [jvm] non-stream** — same environment
   variables as mock-client-responses
-- **openai-stream-proxy-0.0.1[mingwX64/linuxX64/macosArm64]** — native CLI binaries; same config-file argument
+- **openai-stream-proxy-${version}[mingwX64/linuxX64/macosArm64]** — native CLI binaries; same config-file argument
   as JVM
 
 ## Project Architecture

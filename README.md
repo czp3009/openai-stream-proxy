@@ -76,23 +76,23 @@ The request path is appended to `upstreamUrl`, so `upstreamUrl` typically should
 Then run the executable with the config file in place. For JVM:
 
 ```bash
-java -jar openai-stream-proxy-0.0.3-fat.jar
+java -jar openai-stream-proxy-0.0.4-fat.jar
 ```
 
 For native (Linux):
 
 ```bash
-./openai-stream-proxy-0.0.3-linuxX64.kexe
+./openai-stream-proxy-0.0.4-linuxX64.kexe
 ```
 
 The proxy reads `config.json` from the working directory by default. To use a different path:
 
 ```bash
-java -jar openai-stream-proxy-0.0.3-fat.jar --config-file /path/to/config.json
+java -jar openai-stream-proxy-0.0.4-fat.jar --config-file /path/to/config.json
 # or
-java -jar openai-stream-proxy-0.0.3-fat.jar -c /path/to/config.json
+java -jar openai-stream-proxy-0.0.4-fat.jar -c /path/to/config.json
 # same with native executable
-./openai-stream-proxy-0.0.3-linuxX64.kexe --config-file /path/to/config.json
+./openai-stream-proxy-0.0.4-linuxX64.kexe --config-file /path/to/config.json
 ```
 
 ## Build
@@ -119,7 +119,7 @@ provide the Ktor `HttpClientEngine`, and the library handles request rewriting, 
 
 ```kotlin
 dependencies {
-    implementation("com.hiczp:openai-stream-proxy:0.0.3")
+   implementation("com.hiczp:openai-stream-proxy:0.0.4")
 }
 ```
 
