@@ -83,6 +83,9 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
           restore-keys: ${{ runner.os }}-gradle-
 
+      - name: Run Gradle checks
+        run: ./gradlew check
+
       - name: Build JVM fat JAR
         run: ./gradlew :cli:shadowJar
 
