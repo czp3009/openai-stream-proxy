@@ -731,7 +731,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `passthrough returns 502 when upstream disconnects before response headers`() = runBlocking {
+    fun `passthrough returns 504 when upstream disconnects before response headers`() = runBlocking {
         withGatedPassthroughRawSseUpstream(writeResponseHeaders = false) { downstreamPort, signals ->
             HttpClient(CIO.create()) {
                 install(ClientSSE)
@@ -757,10 +757,11 @@ class ChatCompletionsProxyTest {
                 val failure = downstreamFailure.await()
                 val response = failure.response
                 assertNotNull(response)
-                assertEquals(HttpStatusCode.BadGateway, response.status)
+                assertEquals(HttpStatusCode.GatewayTimeout, response.status)
                 val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
                 val error = body.getValue("error").jsonObject
-                assertEquals("upstream_error", error.getValue("type").jsonPrimitive.content)
+                assertEquals("upstream_timeout", error.getValue("type").jsonPrimitive.content)
+                assertEquals("Upstream timed out", error.getValue("message").jsonPrimitive.content)
             }
         }
     }

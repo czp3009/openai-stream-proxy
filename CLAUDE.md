@@ -22,6 +22,16 @@ only is sufficient** — prefer the JVM-only commands above over `build` and `al
 If the `version` in the root `build.gradle.kts` is updated, also update the version numbers in the README.md
 examples to match.
 
+Unit tests must be deterministic and reproducible. For coroutine-related behavior, use coroutine primitives
+(e.g. `CompletableDeferred`, `Channel`, `Mutex`/`Semaphore`) and test schedulers where applicable to make key
+execution points happen in a fixed order. Do not rely on probabilistic timing behavior, wall-clock delays, sleeps,
+elapsed-time polling, short timeouts, or timeout-based synchronization.
+
+A timeout such as `withTimeout` may be used only as a fail-fast guard against deadlocks, not to establish ordering
+or to make the tested behavior happen. When testing timeout behavior itself, prefer virtual time, a fake clock, or a
+controllable fake dependency. For socket/server tests, coordinate client and server progress with explicit handshake
+signals so every assertion observes a known protocol state.
+
 ## Running Modules
 
 For executable modules, prefer using the developer's local IDEA run configuration so required arguments and

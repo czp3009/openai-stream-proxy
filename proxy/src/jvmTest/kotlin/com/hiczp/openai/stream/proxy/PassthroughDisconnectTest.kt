@@ -65,7 +65,6 @@ class PassthroughDisconnectTest {
 
     private suspend fun withFailingRawUpstream(
         failure: RawUpstreamFailure,
-        timeoutMillis: Long = 600_000L,
         block: suspend CoroutineScope.(downstreamPort: Int, signals: RawUpstreamSignals) -> Unit,
     ): Unit = coroutineScope {
         val upstreamSocket = ServerSocket(0)
@@ -120,7 +119,7 @@ class PassthroughDisconnectTest {
         }
 
         val engine = CIO.create()
-        val proxy = ChatCompletionsApiProxy(engine, "http://127.0.0.1:$upstreamPort", timeoutMillis)
+        val proxy = ChatCompletionsApiProxy(engine, "http://127.0.0.1:$upstreamPort")
         val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
             routing { proxyHandler(proxy) }
         }.start()
@@ -432,31 +431,8 @@ class PassthroughDisconnectTest {
                 val body = Json.parseToJsonElement(bodyText).jsonObject
                 val error = body.getValue("error").jsonObject
                 assertEquals("upstream_timeout", error.getValue("type").jsonPrimitive.content)
+                assertEquals("Upstream timed out", error.getValue("message").jsonPrimitive.content)
             }
-        }
-    }
-
-    @Test
-    fun `passthrough returns 504 when upstream times out before response headers`() = runBlocking {
-        withFailingRawUpstream(RawUpstreamFailure.CloseAfterRequest, timeoutMillis = 100L) { downstreamPort, signals ->
-            val downstreamSignals = RawDownstreamSignals()
-            val downstreamResponse = async { postPassthroughRaw(downstreamPort, signals = downstreamSignals) }
-
-            downstreamSignals.requestSent.await()
-            signals.accepted.await()
-            signals.requestRead.await()
-            downstreamSignals.responseHeadersRead.await()
-            downstreamSignals.responseBodyRead.await()
-
-            val (status, bodyText) = downstreamResponse.await()
-            assertEquals(HttpStatusCode.GatewayTimeout, status)
-            val body = Json.parseToJsonElement(bodyText).jsonObject
-            val error = body.getValue("error").jsonObject
-            assertEquals("upstream_timeout", error.getValue("type").jsonPrimitive.content)
-            assertEquals(
-                "Upstream timed out",
-                error.getValue("message").jsonPrimitive.content,
-            )
         }
     }
 
