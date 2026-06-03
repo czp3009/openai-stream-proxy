@@ -10,42 +10,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 ./gradlew :proxy:jvmTest                     # proxy tests (JVM only)
 ./gradlew :cli:jvmTest                       # cli tests (JVM only)
 ./gradlew build                              # build all modules (all platforms, slow)
-./gradlew test                               # all tests (all platforms, slow)
+./gradlew allTests                           # all tests (all platforms, slow)
 ```
 
 JVM toolchain: 21. Kotlin `2.3.21`, Ktor `3.5.0`.
 
 Several modules are Kotlin Multiplatform projects targeting multiple platforms (JVM, mingwX64, linuxX64,
-macOSArm64, etc.). Building all platforms is slow. To check whether code compiles or to run tests, **JVM
-only is sufficient** — prefer the JVM-only commands above over `build` and `test`.
+macosArm64, etc.). Building all platforms is slow. To check whether code compiles or to run tests, **JVM
+only is sufficient** — prefer the JVM-only commands above over `build` and `allTests`.
 
 If the `version` in the root `build.gradle.kts` is updated, also update the version numbers in the README.md
 examples to match.
 
 ## Running Modules
 
-Modules require environment variables that are configured in IDEA run configurations. When running any module,
-**always use IDEA MCP to execute the IDEA run configuration** (`mcp__idea__execute_run_configuration`). Never run
-`./gradlew :module:run` from the command line, because the environment variables won't be set.
-
-The IDEA MCP cannot read the specific environment variable values inside a run configuration. To verify that a
-configuration is correct, run it and infer from the output (e.g. log lines showing resolved config values, or missing
-variable errors). If a required run configuration does not exist, or if the output suggests the configuration is wrong,
-ask the user to create or fix it in IDEA (Run → Edit Configurations).
-
-Current run configurations and their expected environment variables:
-
-- **cli [jvm]** — no environment variables; reads a JSON config file (default `config.json`, override with
-  `--config-file`)
-- **sniffer [jvm]** — `UPSTREAM_BASE_URL` (optional, default `https://api.openai.com`), `LISTEN_PORT` (optional, default
-  `8080`)
-- **mock-client-responses [jvm] stream** / **mock-client-responses [jvm] non-stream** — `OPENAI_API_KEY` (required),
-  `OPENAI_BASE_URL`,
-  `OPENAI_MODEL`, `OPENAI_PROMPT` (optional)
-- **mock-client-chat-completions [jvm] stream** / **mock-client-chat-completions [jvm] non-stream** — same environment
-  variables as mock-client-responses
-- **openai-stream-proxy-${version}[mingwX64/linuxX64/macosArm64]** — native CLI binaries; same config-file argument
-  as JVM
+For executable modules, prefer using the developer's local IDEA run configuration so required arguments and
+environment variables come from that developer's environment. Do not encode specific run configuration names here:
+local IDEA configuration state can differ per machine, and the agent should choose the appropriate configuration from
+the current workspace. If a run configuration is missing or appears misconfigured, ask the developer to create or fix
+it.
 
 ## Project Architecture
 
@@ -64,16 +47,19 @@ Kotlin Multiplatform project using Gradle version catalogs.
   protocol-specific conversion logic. `ResponsesApiProxy` extends `AbstractApiProxy` and handles one protocol conversion
   path:
   downstream non-streaming `POST /v1/responses` requests are rewritten to upstream `stream: true`,
-  the upstream SSE is consumed by `ResponseAccumulator` (which collects `response.output_item.done`
-  events and waits for a terminal event: `response.completed`, `response.failed`, or
-  `response.incomplete`), the final `Response` state is assembled in memory, and a non-streaming
-  JSON response is sent downstream.
+  the upstream SSE is consumed by `ResponseAccumulator` (which records `response.output_item.done`
+  items as an output fallback and waits for a terminal event: `response.completed`,
+  `response.failed`, or `response.incomplete`), the terminal `Response` state is assembled in
+  memory, and a non-streaming JSON response is sent downstream.
   Requests that do not match the conversion criteria (non-POST, non-`/responses` path, non-JSON
   content type, missing `model` field, or `stream=true`) are passed through unchanged via
   `passthrough()`.
   When the upstream returns a non-SSE error response during the SSE connect phase, it is relayed
   as-is. `proxy()` receives a `respond` callback and writes downstream responses internally;
-  upstream failures (incomplete stream, network error) are converted to 502 `upstream_error`.
+  conversion-flow upstream failures (incomplete stream, network error) are converted to 502
+  `upstream_error`. Passthrough upstream `IOException`s before response headers are converted to
+  504 `upstream_timeout`; once passthrough response headers have been received, the started
+  response is preserved and later upstream I/O failures are only logged.
   Exceptions signal proxy bugs (caller should map to 500). Depends on `ktor-client-core`,
   `ktor-http`, `ktor-io`, `kotlinx-serialization-json`, and `kotlin-logging`. No platform-specific
   engines; consumers provide the engine.
@@ -91,7 +77,7 @@ Kotlin Multiplatform project using Gradle version catalogs.
   passed through unchanged via `passthrough()`.
 - **cli** - CLI wrapper for `proxy`. Reads a JSON config file (via `--config-file`, default `config.json`)
   with the structure `{"timeoutSeconds": 600, "rules": [{"listenPort": 8080, "upstreamUrl": "..."}]}`,
-  starts one Ktor CIO server per config rule (each listening on a different port). All requests are
+  starts one Ktor CIO server with one connector per config rule (each listening on a different port). All requests are
   handled by a catch-all `route("/{...}")` that selects the proxy implementation based on the request
   path: paths ending with `/responses` use `ResponsesApiProxy`, all other paths use
   `ChatCompletionsApiProxy` (which falls through to passthrough for non-`/chat/completions` paths).
@@ -99,18 +85,19 @@ Kotlin Multiplatform project using Gradle version catalogs.
   `kotlinx-atomicfu` `synchronized` for thread safety. A single `HttpClientEngine` is shared across
   all proxy instances and closed on server shutdown via the `ApplicationStopping` monitor event.
   `proxy()` injects Ktor's response operation through its `respond` parameter; upstream failures
-  are handled by `AbstractApiProxy`, exceptions → 500 `internal_error` via StatusPages
+  are handled by `AbstractApiProxy` (including passthrough pre-response I/O failures → 504
+  `upstream_timeout`), exceptions → 500 `internal_error` via StatusPages
   (`ErrorHandler.kt` uses `CancellationException`-aware handler). Platform-specific shutdown: JVM uses
   `Runtime.addShutdownHook`, native registers `SIGTERM`/`SIGINT` handlers; servers stopped
   with 2s grace / 5s timeout. Uses `kotlinx-cli` for argument parsing, `kotlinx-atomicfu` for
   cross-platform synchronization, and the `shadow` Gradle plugin for JVM fat JAR packaging. Targets
-  JVM, mingwX64, linuxX64, macosArm64 (not linuxArm64 — `kotlinx-cli` doesn't support it).
+  JVM, mingwX64, linuxX64, macosArm64 (not linuxArm64).
 
 #### Auxiliary
 
 - **sniffer** - JVM-only development tool for analyzing OpenAI API traffic. A reverse proxy
   (`ReverseProxy`) that buffers entire request/response bodies and logs headers and bodies both to
-  stdout (via `TrafficLogger` + `kotlin-logging`) and to per-path files: requests ending with
+  console/log output (via `TrafficLogger` + `kotlin-logging`) and to per-path files: requests ending with
   `/responses` go to `temp/responses.txt`, `/chat/completions` to `temp/chat_completions.txt`,
   others to `temp/others.txt`. Uses Ktor CIO client and server. Configured via environment variables:
   `UPSTREAM_BASE_URL` (default `https://api.openai.com`) and `LISTEN_PORT` (default `8080`).
@@ -124,7 +111,7 @@ Kotlin Multiplatform project using Gradle version catalogs.
 
 ### Key Patterns
 
-- `proxy` is engine-agnostic and depends only on common Ktor client/I/O APIs.
+- `proxy` is engine-agnostic: it uses common Ktor client/I/O APIs and does not include a concrete client engine.
 - `proxy` converts synchronous non-streaming `POST /v1/responses` requests (via `ResponsesApiProxy`)
   and `POST /v1/chat/completions` requests (via `ChatCompletionsApiProxy`).
 - Requests with `stream=true` are not converted and must be passed through unchanged.
@@ -134,13 +121,15 @@ Kotlin Multiplatform project using Gradle version catalogs.
   `needConvert()`, `rewriteBody()`, `createAccumulator()`, and `buildResult()` for protocol-specific conversion.
 - `ResponseAccumulator` and `ChatCompletionsAccumulator` both implement the `SseAccumulator` interface.
   They are not thread-safe — `accumulate()` must be called from a single coroutine.
-- `cli` uses CIO engine everywhere (client and server), no HTTPS support.
-- `cli` uses `expect/actual` for `configureLogging()` (JVM sets logback to INFO; native is no-op) and
+- `cli` serves plain HTTP listeners with Ktor CIO server; its upstream client engine is CIO on JVM
+  and Curl on native.
+- `cli` uses `expect/actual` for `configureLogging()` (JVM configures logback, native configures
+  kotlin-logging direct mode; both read `LOG_LEVEL` and default to DEBUG) and
   `registerShutdownHook()` (JVM uses `Runtime.addShutdownHook`; native uses POSIX `signal`).
 - `proxy` targets JVM, mingwX64, linuxX64, linuxArm64, and macosArm64.
 - `cli` targets JVM, mingwX64, linuxX64, and macosArm64 (no linuxArm64).
 - `sniffer`, `mock-client-responses`, and `mock-client-chat-completions` are JVM executables with code in `commonMain`
   and `mainClass.set(...)` in the JVM block.
 - Test SSE fixtures are in `commonTest/resources` under each module's package path.
-- Tests use real Ktor CIO servers on ephemeral ports (`ServerSocket(0)`) with Ktor CIO clients
-  for HTTP-level end-to-end verification — no mocks or SDK clients.
+- HTTP-level proxy and CLI tests use real Ktor CIO servers on ephemeral ports (`ServerSocket(0)`)
+  with Ktor CIO clients or raw sockets; accumulator tests feed parsed SSE fixture events directly.
