@@ -283,7 +283,7 @@ abstract class AbstractApiProxy(
         } catch (e: IOException) {
             logger.warn { "Passthrough request to $upstreamUrl failed: ${e.message}" }
             if (!upstreamResponseReceived) {
-                respondUpstreamError(respond)
+                respondUpstreamTimeout(respond)
             }
         }
     }
@@ -301,6 +301,16 @@ abstract class AbstractApiProxy(
             OpenAiErrors.errorResponse(
                 message = "Upstream returned incomplete or invalid response",
                 type = "upstream_error",
+            )
+        )
+    }
+
+    private suspend fun respondUpstreamTimeout(respond: suspend (OutgoingContent) -> Unit) {
+        respond(
+            OpenAiErrors.errorResponse(
+                message = "Upstream timed out",
+                type = "upstream_timeout",
+                status = HttpStatusCode.GatewayTimeout,
             )
         )
     }
