@@ -50,13 +50,32 @@ internal suspend fun proxyWebSocketSessions(
             }
         }
         val upstreamToDownstream = launch {
+            var upstreamIncomingClosed = false
             try {
-                for (frame in upstreamSession.incoming) {
+                while (true) {
+                    val frame = upstreamSession.incoming.receiveCatching().getOrNull() ?: break
                     downstreamSession.send(frame)
                 }
+                upstreamIncomingClosed = true
             } finally {
                 withContext(NonCancellable) {
-                    downstreamSession.close()
+                    val upstreamCloseReason = if (upstreamIncomingClosed) {
+                        (upstreamSession as? DefaultWebSocketSession)?.closeReason?.await()
+                    } else {
+                        null
+                    }
+                    val downstreamCloseReason = if (
+                        upstreamCloseReason == null ||
+                        upstreamCloseReason.code.toInt() == 1006
+                    ) {
+                        CloseReason(
+                            CloseReason.Codes.INTERNAL_ERROR,
+                            "upstream websocket disconnected abnormally",
+                        )
+                    } else {
+                        upstreamCloseReason
+                    }
+                    downstreamSession.close(downstreamCloseReason)
                 }
                 throw CancellationException("Upstream WebSocket session closed")
             }

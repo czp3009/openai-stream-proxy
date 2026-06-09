@@ -10,15 +10,14 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.http.content.*
+import io.ktor.http.websocket.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.websocket.*
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import java.net.ServerSocket
 import java.net.Socket
@@ -106,6 +105,13 @@ class ServerTest {
         }
     }
 
+    private fun RawWebSocketFrame.closeCode(): Short {
+        require(payload.size >= 2) { "Close frame payload does not contain a close code" }
+        return (((payload[0].toInt() and 0xff) shl 8) or (payload[1].toInt() and 0xff)).toShort()
+    }
+
+    private fun RawWebSocketFrame.closeMessage(): String = payload.copyOfRange(2, payload.size).decodeToString()
+
     private fun Socket.writeWebSocketHandshake(port: Int) {
         val request = buildString {
             append("GET /v1/realtime HTTP/1.1\r\n")
@@ -132,6 +138,52 @@ class ServerTest {
         }
         getOutputStream().write(frame)
         getOutputStream().flush()
+    }
+
+    private fun Socket.writeUnmaskedTextFrame(text: String) {
+        val payload = text.encodeToByteArray()
+        require(payload.size < 126) { "Test helper only supports small frames" }
+        getOutputStream().write(byteArrayOf(0x81.toByte(), payload.size.toByte()))
+        getOutputStream().write(payload)
+        getOutputStream().flush()
+    }
+
+    private fun Socket.writeUnmaskedCloseFrame(reason: CloseReason) {
+        val messageBytes = reason.message.encodeToByteArray()
+        val payload = ByteArray(2 + messageBytes.size)
+        payload[0] = ((reason.code.toInt() shr 8) and 0xff).toByte()
+        payload[1] = (reason.code.toInt() and 0xff).toByte()
+        messageBytes.copyInto(payload, destinationOffset = 2)
+        require(payload.size < 126) { "Test helper only supports small close frames" }
+        getOutputStream().write(byteArrayOf(0x88.toByte(), payload.size.toByte()))
+        getOutputStream().write(payload)
+        getOutputStream().flush()
+    }
+
+    private fun Socket.writePartialUnmaskedTextFrame(declaredPayloadLength: Int, payloadPrefix: String) {
+        val payload = payloadPrefix.encodeToByteArray()
+        require(declaredPayloadLength in 0..125) { "Test helper only supports small frames" }
+        require(payload.size < declaredPayloadLength) { "Payload prefix must be shorter than declared payload length" }
+        getOutputStream().write(byteArrayOf(0x81.toByte(), declaredPayloadLength.toByte()))
+        getOutputStream().write(payload)
+        getOutputStream().flush()
+    }
+
+    private fun writeRawWebSocketHandshakeResponse(socket: Socket, requestHeaders: String) {
+        val key = requestHeaders
+            .lineSequence()
+            .first { it.startsWith("${HttpHeaders.SecWebSocketKey}:", ignoreCase = true) }
+            .substringAfter(':')
+            .trim()
+        val response = buildString {
+            append("HTTP/1.1 101 Switching Protocols\r\n")
+            append("Upgrade: websocket\r\n")
+            append("Connection: Upgrade\r\n")
+            append("Sec-WebSocket-Accept: ${websocketServerAccept(key)}\r\n")
+            append("\r\n")
+        }
+        socket.getOutputStream().write(response.encodeToByteArray())
+        socket.getOutputStream().flush()
     }
 
     private fun startProxyServer(downstreamPort: Int, upstreamPort: Int) =
@@ -408,6 +460,34 @@ class ServerTest {
     }
 
     @Test
+    fun `installErrorHandler sees websocket calls as responded after websocket upgrade`() = runBlocking {
+        val downstreamPort = findFreePort()
+        val responseState = CompletableDeferred<Pair<Boolean, Boolean>>()
+
+        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+            install(ServerWebSockets)
+            installErrorHandler()
+            routing {
+                serverWebSocket("/{...}") {
+                    responseState.complete(call.response.isCommitted to call.response.isSent)
+                    error("websocket handler failure")
+                }
+            }
+        }.start()
+
+        try {
+            Socket("127.0.0.1", downstreamPort).use { socket ->
+                socket.writeWebSocketHandshake(downstreamPort)
+                assertTrue(readHttpHeaders(socket).startsWith("HTTP/1.1 101"))
+                assertEquals(true to false, responseState.await())
+                assertNull(readRawWebSocketFrameOrNullWithTimeout(socket))
+            }
+        } finally {
+            downstreamServer.stop()
+        }
+    }
+
+    @Test
     fun `configureProxyServer accepts downstream websocket before upstream rejects websocket handshake`() =
         runBlocking {
             listOf(
@@ -436,21 +516,240 @@ class ServerTest {
                 try {
                     Socket("127.0.0.1", downstreamPort).use { socket ->
                         socket.writeWebSocketHandshake(downstreamPort)
-
                         val downstreamHandshake = readHttpHeaders(socket)
                         assertTrue(
                             downstreamHandshake.startsWith("HTTP/1.1 101"),
                             "Downstream should already receive 101 for upstream ${upstreamStatus.value}: $downstreamHandshake",
                         )
-                        assertNull(
-                            readRawWebSocketFrameOrNullWithTimeout(socket),
-                            "Proxy should close TCP without forwarding upstream ${upstreamStatus.value} as HTTP response",
+                        val closeFrame = readRawWebSocketFrameOrNullWithTimeout(socket)
+                            ?: error("Proxy should send a WebSocket close frame for upstream ${upstreamStatus.value}")
+                        assertEquals(8, closeFrame.opcode)
+                        assertEquals(CloseReason.Codes.INTERNAL_ERROR.code, closeFrame.closeCode())
+                        assertEquals(
+                            "Handshake exception, expected status code 101 but was ${upstreamStatus.value}",
+                            closeFrame.closeMessage(),
                         )
                     }
                 } finally {
                     downstreamServer.stop()
                     clientEngine.close()
                     upstreamServer.stop()
+                }
+            }
+        }
+
+    @Test
+    fun `configureProxyServer closes downstream websocket when upstream websocket connection fails`() = runBlocking {
+        val upstreamPort = findFreePort()
+        val downstreamPort = findFreePort()
+        val clientEngine = CIO.create()
+        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+            configureProxyServer(
+                clientEngine,
+                listOf(ProxyRule(downstreamPort, "http://127.0.0.1:$upstreamPort")),
+                600_000L,
+            )
+        }.start()
+
+        try {
+            Socket("127.0.0.1", downstreamPort).use { socket ->
+                socket.writeWebSocketHandshake(downstreamPort)
+                assertTrue(readHttpHeaders(socket).startsWith("HTTP/1.1 101"))
+                assertNull(readRawWebSocketFrameOrNullWithTimeout(socket))
+            }
+        } finally {
+            downstreamServer.stop()
+            clientEngine.close()
+        }
+    }
+
+    @Test
+    fun `configureProxyServer forwards upstream websocket close reason`() =
+        runBlocking<Unit> {
+            val upstreamSocket = ServerSocket(0)
+            val upstreamPort = upstreamSocket.localPort
+            val downstreamPort = findFreePort()
+            val upstreamJob = async(Dispatchers.IO) {
+                upstreamSocket.use { serverSocket ->
+                    serverSocket.accept().use { socket ->
+                        writeRawWebSocketHandshakeResponse(socket, readHttpHeaders(socket))
+                        socket.writeUnmaskedCloseFrame(CloseReason(CloseReason.Codes.NORMAL, "done"))
+                        readRawWebSocketFrameOrNullWithTimeout(socket)
+                    }
+                }
+            }
+            val clientEngine = CIO.create()
+            val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+                configureProxyServer(
+                    clientEngine,
+                    listOf(ProxyRule(downstreamPort, "http://127.0.0.1:$upstreamPort")),
+                    600_000L,
+                )
+            }.start()
+
+            try {
+                Socket("127.0.0.1", downstreamPort).use { socket ->
+                    socket.writeWebSocketHandshake(downstreamPort)
+                    assertTrue(readHttpHeaders(socket).startsWith("HTTP/1.1 101"))
+
+                    val closeFrame = readRawWebSocketFrameOrNullWithTimeout(socket)
+                        ?: error("Proxy should forward upstream WebSocket close frame")
+                    assertEquals(8, closeFrame.opcode)
+                    assertEquals(CloseReason.Codes.NORMAL.code, closeFrame.closeCode())
+                    assertEquals("done", closeFrame.closeMessage())
+                }
+                upstreamJob.await()
+            } finally {
+                downstreamServer.stop()
+                clientEngine.close()
+                upstreamSocket.close()
+                if (!upstreamJob.isCompleted) {
+                    upstreamJob.cancelAndJoin()
+                }
+            }
+        }
+
+    @Test
+    fun `configureProxyServer reports abnormal close when upstream disconnects after websocket handshake`() =
+        runBlocking<Unit> {
+            val upstreamSocket = ServerSocket(0)
+            val upstreamPort = upstreamSocket.localPort
+            val downstreamPort = findFreePort()
+            val upstreamHandshakeCompleted = CompletableDeferred<Unit>()
+            val upstreamJob = async(Dispatchers.IO) {
+                upstreamSocket.use { serverSocket ->
+                    serverSocket.accept().use { socket ->
+                        writeRawWebSocketHandshakeResponse(socket, readHttpHeaders(socket))
+                        upstreamHandshakeCompleted.complete(Unit)
+                    }
+                }
+            }
+            val clientEngine = CIO.create()
+            val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+                configureProxyServer(
+                    clientEngine,
+                    listOf(ProxyRule(downstreamPort, "http://127.0.0.1:$upstreamPort")),
+                    600_000L,
+                )
+            }.start()
+
+            try {
+                Socket("127.0.0.1", downstreamPort).use { socket ->
+                    socket.writeWebSocketHandshake(downstreamPort)
+                    assertTrue(readHttpHeaders(socket).startsWith("HTTP/1.1 101"))
+                    upstreamHandshakeCompleted.await()
+
+                    val closeFrame = readRawWebSocketFrameOrNullWithTimeout(socket)
+                        ?: error("Proxy should send a WebSocket close frame after upstream disconnects")
+                    assertEquals(8, closeFrame.opcode)
+                    assertEquals(CloseReason.Codes.INTERNAL_ERROR.code, closeFrame.closeCode())
+                    assertEquals("upstream websocket disconnected abnormally", closeFrame.closeMessage())
+                }
+                upstreamJob.await()
+            } finally {
+                downstreamServer.stop()
+                clientEngine.close()
+                upstreamSocket.close()
+                if (!upstreamJob.isCompleted) {
+                    upstreamJob.cancelAndJoin()
+                }
+            }
+        }
+
+    @Test
+    fun `configureProxyServer forwards upstream frame before upstream disconnects without close frame`() =
+        runBlocking<Unit> {
+            val upstreamSocket = ServerSocket(0)
+            val upstreamPort = upstreamSocket.localPort
+            val downstreamPort = findFreePort()
+            val upstreamJob = async(Dispatchers.IO) {
+                upstreamSocket.use { serverSocket ->
+                    serverSocket.accept().use { socket ->
+                        writeRawWebSocketHandshakeResponse(socket, readHttpHeaders(socket))
+                        socket.writeUnmaskedTextFrame("before disconnect")
+                    }
+                }
+            }
+            val clientEngine = CIO.create()
+            val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+                configureProxyServer(
+                    clientEngine,
+                    listOf(ProxyRule(downstreamPort, "http://127.0.0.1:$upstreamPort")),
+                    600_000L,
+                )
+            }.start()
+
+            try {
+                Socket("127.0.0.1", downstreamPort).use { socket ->
+                    socket.writeWebSocketHandshake(downstreamPort)
+                    assertTrue(readHttpHeaders(socket).startsWith("HTTP/1.1 101"))
+
+                    val textFrame = readRawWebSocketFrameOrNullWithTimeout(socket)
+                        ?: error("Proxy should forward the complete upstream frame")
+                    assertEquals(1, textFrame.opcode)
+                    assertEquals("before disconnect", textFrame.payload.decodeToString())
+
+                    val closeFrame = readRawWebSocketFrameOrNullWithTimeout(socket)
+                        ?: error("Proxy should send a WebSocket close frame after upstream disconnects")
+                    assertEquals(8, closeFrame.opcode)
+                    assertEquals(CloseReason.Codes.INTERNAL_ERROR.code, closeFrame.closeCode())
+                    assertEquals("upstream websocket disconnected abnormally", closeFrame.closeMessage())
+                }
+                upstreamJob.await()
+            } finally {
+                downstreamServer.stop()
+                clientEngine.close()
+                upstreamSocket.close()
+                if (!upstreamJob.isCompleted) {
+                    upstreamJob.cancelAndJoin()
+                }
+            }
+        }
+
+    @Test
+    fun `configureProxyServer does not forward incomplete upstream frame before upstream disconnects`() =
+        runBlocking<Unit> {
+            val upstreamSocket = ServerSocket(0)
+            val upstreamPort = upstreamSocket.localPort
+            val downstreamPort = findFreePort()
+            val upstreamJob = async(Dispatchers.IO) {
+                upstreamSocket.use { serverSocket ->
+                    serverSocket.accept().use { socket ->
+                        writeRawWebSocketHandshakeResponse(socket, readHttpHeaders(socket))
+                        socket.writePartialUnmaskedTextFrame(
+                            declaredPayloadLength = "incomplete message".encodeToByteArray().size,
+                            payloadPrefix = "incomplete",
+                        )
+                    }
+                }
+            }
+            val clientEngine = CIO.create()
+            val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+                configureProxyServer(
+                    clientEngine,
+                    listOf(ProxyRule(downstreamPort, "http://127.0.0.1:$upstreamPort")),
+                    600_000L,
+                )
+            }.start()
+
+            try {
+                Socket("127.0.0.1", downstreamPort).use { socket ->
+                    socket.writeWebSocketHandshake(downstreamPort)
+                    assertTrue(readHttpHeaders(socket).startsWith("HTTP/1.1 101"))
+
+                    val closeFrame = readRawWebSocketFrameOrNullWithTimeout(socket)
+                        ?: error("Proxy should send a WebSocket close frame after incomplete upstream frame")
+                    assertEquals(8, closeFrame.opcode)
+                    assertEquals(CloseReason.Codes.INTERNAL_ERROR.code, closeFrame.closeCode())
+                    assertEquals("upstream websocket disconnected abnormally", closeFrame.closeMessage())
+                }
+                upstreamJob.await()
+            } finally {
+                downstreamServer.stop()
+                clientEngine.close()
+                upstreamSocket.close()
+                if (!upstreamJob.isCompleted) {
+                    upstreamJob.cancelAndJoin()
                 }
             }
         }

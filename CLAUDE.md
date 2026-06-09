@@ -74,10 +74,14 @@ It starts one Ktor CIO server with one connector per rule. A single `HttpClientE
 instances and the WebSocket upstream client, and is closed on application shutdown.
 
 WebSocket requests are handled before the HTTP catch-all route. The CLI uses Ktor server `webSocket` and client
-`webSocket`, maps `http(s)` upstream URLs to `ws(s)`, forwards only headers valid for a new upstream WebSocket
-handshake, and pipes both sessions without payload rewriting or whole-session buffering. Keep WebSocket passthrough
-as direct read-one-frame/write-one-frame logic with zero-capacity Ktor frame channels for backpressure; do not
-aggregate WebSocket messages or sessions in memory.
+`webSocket`, maps `http(s)` upstream URLs to `ws(s)`, strips hop-by-hop, WebSocket handshake-generated, and
+`Connection`-listed request headers before opening the upstream WebSocket, and pipes both sessions without payload
+rewriting or whole-session buffering. Keep WebSocket passthrough as direct read-one-frame/write-one-frame logic with
+zero-capacity Ktor frame channels for backpressure; do not aggregate WebSocket messages or sessions in memory.
+Normal upstream WebSocket close reasons are forwarded downstream. If an upstream session ends without a normal
+WebSocket close reason, the downstream session is closed with `1011 INTERNAL_ERROR`. If the upstream responds to the
+WebSocket handshake with a non-101 status after the downstream has already been upgraded, the downstream receives a
+WebSocket close frame rather than an HTTP error response.
 `WebSocketProxy.kt` owns WebSocket header forwarding and bidirectional session piping.
 
 Non-WebSocket HTTP requests go through the catch-all `route("/{...}")`, which selects:

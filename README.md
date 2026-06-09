@@ -8,7 +8,9 @@ Supports the **Responses API** (`/v1/responses`) and **Chat Completions API** (`
 using `stream=true` are passed through unchanged.
 
 WebSocket requests are proxied to the corresponding upstream `ws://` or `wss://` URL. Data is forwarded in both
-directions as it arrives, with backpressure and without payload rewriting or whole-session buffering.
+directions as it arrives, with backpressure and without payload rewriting or whole-session buffering. For established
+upstream WebSocket sessions, normal close reasons are forwarded and abnormal disconnects are reported to the downstream
+client as WebSocket internal errors.
 
 This project only converts between non-streaming and streaming modes. It does not support protocol conversion, including
 but not limited to converting the Responses protocol to the Chat Completions protocol, or converting the Responses
@@ -79,7 +81,8 @@ downstream client.
 For WebSocket requests, the proxy keeps the same path and query string, maps `http://` upstream URLs to `ws://` and
 `https://` upstream URLs to `wss://`, and forwards request headers such as `Authorization`. WebSocket traffic is
 forwarded bidirectionally in streaming mode with backpressure so the proxy can handle long-lived connections with low
-memory usage.
+memory usage. When the upstream closes the WebSocket normally, the close reason is forwarded downstream. If the upstream
+WebSocket session ends without a normal close, the downstream WebSocket is closed with an internal error.
 
 The request path is appended to `upstreamUrl`, so `upstreamUrl` typically should not include `/v1`.
 

@@ -7,6 +7,7 @@ import com.hiczp.openai.stream.proxy.ResponsesApiProxy
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.engine.*
+import io.ktor.client.plugins.websocket.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -16,7 +17,9 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
+import io.ktor.server.websocket.WebSockets
 import io.ktor.util.*
+import io.ktor.websocket.*
 import kotlinx.cli.ArgParser
 import kotlinx.cli.ArgParser.OptionPrefixStyle
 import kotlinx.cli.ArgType
@@ -170,6 +173,9 @@ internal fun Application.configureProxyServer(
                 }) {
                     proxyWebSocketSessions(downstreamSession = this@downstream, upstreamSession = this)
                 }
+            } catch (e: WebSocketException) {
+                logger.warn { "Upstream WebSocket handshake failed for $upstreamUrl: ${e.message}" }
+                close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, e.message ?: "Upstream WebSocket handshake failed"))
             } finally {
                 val elapsed = startMark.elapsedNow().toInt(DurationUnit.MILLISECONDS)
                 logger.info { "WebSocket completed: $upstreamUrl (${elapsed}ms)" }
