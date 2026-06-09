@@ -129,6 +129,7 @@ The library is published for JVM, mingwX64, linuxX64, linuxArm64, and macosArm64
 
 ```kotlin
 import com.hiczp.openai.stream.proxy.ChatCompletionsApiProxy
+import com.hiczp.openai.stream.proxy.PassthroughApiProxy
 import com.hiczp.openai.stream.proxy.ResponsesApiProxy
 import io.ktor.client.engine.cio.*
 import io.ktor.http.*
@@ -146,6 +147,7 @@ fun main() {
 
     val responsesProxy = ResponsesApiProxy(engine, upstreamUrl, timeoutMillis)
     val chatProxy = ChatCompletionsApiProxy(engine, upstreamUrl, timeoutMillis)
+   val passthroughProxy = PassthroughApiProxy(engine, upstreamUrl, timeoutMillis)
 
     embeddedServer(ServerCIO, port = 8080) {
         routing {
@@ -169,6 +171,18 @@ fun main() {
                   call.respond(response)
                 }
             }
+           route("/{...}") {
+              handle {
+                 passthroughProxy.proxy(
+                    call.request.httpMethod,
+                    call.request.uri,
+                    call.request.headers,
+                    call.receiveChannel(),
+                 ) { response ->
+                    call.respond(response)
+                 }
+              }
+            }
         }
     }.start(wait = true)
 }
@@ -176,7 +190,7 @@ fun main() {
 
 ### How It Works
 
-Each proxy class follows the same flow:
+Conversion proxy classes follow the same flow:
 
 1. **Validate** — Check HTTP method, path, content type, and request body (must be JSON with a `model` field and
    `stream` absent or `false`).
@@ -185,7 +199,10 @@ Each proxy class follows the same flow:
 4. **Aggregate** — Collect SSE events into a single accumulated response in memory.
 5. **Respond** — Send a non-streaming JSON response to the downstream client through the injected responder.
 
-Requests that don't match the conversion criteria are forwarded unchanged (passthrough).
+Requests that don't match the conversion criteria are forwarded unchanged (passthrough). This also applies when a
+protocol-specific proxy receives traffic outside its path match: for example, `ResponsesApiProxy` will passthrough
+non-`*/responses` requests, and `ChatCompletionsApiProxy` will passthrough non-`*/chat/completions` requests.
+`PassthroughApiProxy` skips conversion entirely and forwards every request unchanged.
 
 ### Proxy Classes
 
@@ -193,8 +210,9 @@ Requests that don't match the conversion criteria are forwarded unchanged (passt
 |---------------------------|------------------|----------------------|
 | `ResponsesApiProxy`       | Responses API    | `*/responses`        |
 | `ChatCompletionsApiProxy` | Chat Completions | `*/chat/completions` |
+| `PassthroughApiProxy`     | Any              | all requests         |
 
-Both extend `AbstractApiProxy`, which provides streaming `passthrough()` for forwarding requests unchanged,
+All proxy classes extend `AbstractApiProxy`, which provides streaming `passthrough()` for forwarding requests unchanged,
 upstream error responses for failed or invalid upstream streams, and `stripHopByHopHeaders()` for header cleanup.
 
 ### Resource Lifecycle

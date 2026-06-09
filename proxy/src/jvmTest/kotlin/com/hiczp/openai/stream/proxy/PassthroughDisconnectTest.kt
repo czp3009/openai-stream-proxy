@@ -119,7 +119,7 @@ class PassthroughDisconnectTest {
         }
 
         val engine = CIO.create()
-        val proxy = ChatCompletionsApiProxy(engine, "http://127.0.0.1:$upstreamPort")
+        val proxy = PassthroughApiProxy(engine, "http://127.0.0.1:$upstreamPort")
         val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
             routing { proxyHandler(proxy) }
         }.start()
@@ -163,7 +163,7 @@ class PassthroughDisconnectTest {
         }
     }
 
-    private fun Route.proxyHandler(proxy: ChatCompletionsApiProxy) {
+    private fun Route.proxyHandler(proxy: AbstractApiProxy) {
         route("/{...}") {
             handle {
                 try {

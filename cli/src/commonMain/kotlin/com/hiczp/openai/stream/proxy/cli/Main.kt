@@ -2,6 +2,7 @@ package com.hiczp.openai.stream.proxy.cli
 
 import com.hiczp.openai.stream.proxy.AbstractApiProxy
 import com.hiczp.openai.stream.proxy.ChatCompletionsApiProxy
+import com.hiczp.openai.stream.proxy.PassthroughApiProxy
 import com.hiczp.openai.stream.proxy.ResponsesApiProxy
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.engine.*
@@ -101,9 +102,9 @@ fun main(args: Array<String>) {
  * defined in [rules].
  *
  * For each request, selects the proxy implementation based on the request path:
- * paths ending with `/responses` use [ResponsesApiProxy]; all other paths use
- * [ChatCompletionsApiProxy] (which falls through to [AbstractApiProxy.passthrough]
- * for non-`/chat/completions` paths).
+ * paths ending with `/responses` use [ResponsesApiProxy], paths ending with
+ * `/chat/completions` use [ChatCompletionsApiProxy], and all other paths use
+ * [PassthroughApiProxy].
  *
  * Proxy instances are lazily created and cached by `(listen port, proxy class)`.
  * Requests with `stream=true` are not converted and are passed through unchanged.
@@ -134,18 +135,25 @@ internal fun Application.configureProxyServer(
                 val port = call.request.local.localPort
                 val uri = call.request.uri
                 val path = uri.substringBefore('?').trimEnd('/')
-                val proxyClass: KClass<out AbstractApiProxy> = if (path.endsWith("/responses")) {
-                    ResponsesApiProxy::class
-                } else {
-                    ChatCompletionsApiProxy::class
-                }
+                val proxyClass = selectProxyClass(path)
 
                 val proxy = proxyCacheLock.withLock {
                     proxyCache.getOrPut(port to proxyClass) {
                         val rule = ruleCache.getValue(port)
                         when (proxyClass) {
-                            ResponsesApiProxy::class -> ResponsesApiProxy(clientEngine, rule.upstreamUrl, timeoutMillis)
-                            else -> ChatCompletionsApiProxy(clientEngine, rule.upstreamUrl, timeoutMillis)
+                            ResponsesApiProxy::class -> ResponsesApiProxy(
+                                clientEngine,
+                                rule.upstreamUrl,
+                                timeoutMillis
+                            )
+
+                            ChatCompletionsApiProxy::class -> ChatCompletionsApiProxy(
+                                clientEngine,
+                                rule.upstreamUrl,
+                                timeoutMillis,
+                            )
+
+                            else -> PassthroughApiProxy(clientEngine, rule.upstreamUrl, timeoutMillis)
                         }
                     }
                 }
@@ -166,4 +174,10 @@ internal fun Application.configureProxyServer(
             }
         }
     }
+}
+
+internal fun selectProxyClass(path: String): KClass<out AbstractApiProxy> = when {
+    path.endsWith("/responses") -> ResponsesApiProxy::class
+    path.endsWith("/chat/completions") -> ChatCompletionsApiProxy::class
+    else -> PassthroughApiProxy::class
 }

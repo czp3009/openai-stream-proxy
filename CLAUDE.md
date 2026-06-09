@@ -50,11 +50,12 @@ Kotlin Multiplatform project using Gradle version catalogs.
 
 - **proxy** - Core library. `AbstractApiProxy` is the shared base class providing the upstream HTTP
   client (with SSE and timeout plugins), `passthrough()` for forwarding requests unchanged, and
-  `stripHopByHopHeaders()`. The public entry point `proxy()` is a template method that validates
-  the request and delegates to `convert()` (another template method). Subclasses implement
-  `needConvert()` (path/method matching), `rewriteBody()` (body rewriting), `createAccumulator()`
-  (SSE event accumulator factory), and `buildResult()` (final response assembly) to define
-  protocol-specific conversion logic. `ResponsesApiProxy` extends `AbstractApiProxy` and handles one protocol conversion
+  `stripHopByHopHeaders()`. The public entry point `proxy()` is a template method that first checks
+  `needConvert()` (path/method matching); non-matching requests are forwarded unchanged, while matching
+  conversion requests are validated and delegated to `convert()` (another template method). Conversion
+  subclasses implement `rewriteBody()` (body rewriting), `createAccumulator()` (SSE event accumulator
+  factory), and `buildResult()` (final response assembly) to define protocol-specific conversion logic.
+  `ResponsesApiProxy` extends `AbstractApiProxy` and handles one protocol conversion
   path:
   downstream non-streaming `POST /v1/responses` requests are rewritten to upstream `stream: true`,
   the upstream SSE is consumed by `ResponseAccumulator` (which records `response.output_item.done`
@@ -79,7 +80,9 @@ Kotlin Multiplatform project using Gradle version catalogs.
   `SseAccumulator` (interface for SSE event accumulators),
   `ChatCompletionsAccumulator` (implements `SseAccumulator`, merges streamed Chat Completions SSE
   deltas into a single non-streaming JSON response, used by `ChatCompletionsApiProxy`),
-  and `ResponseAccumulator` (implements `SseAccumulator`, used by `ResponsesApiProxy`).
+  `ResponseAccumulator` (implements `SseAccumulator`, used by `ResponsesApiProxy`), and
+  `PassthroughApiProxy` (extends `AbstractApiProxy` with `needConvert()` always false so every
+  request is forwarded unchanged).
   `ChatCompletionsApiProxy` extends `AbstractApiProxy` and handles Chat Completions conversion:
   downstream non-streaming `POST /v1/chat/completions` requests are rewritten to upstream
   `stream: true` with `stream_options.include_usage=true`, the upstream SSE is consumed by
@@ -91,8 +94,8 @@ Kotlin Multiplatform project using Gradle version catalogs.
   with the structure `{"timeoutSeconds": 600, "rules": [{"listenPort": 8080, "upstreamUrl": "..."}]}`,
   starts one Ktor CIO server with one connector per config rule (each listening on a different port). All requests are
   handled by a catch-all `route("/{...}")` that selects the proxy implementation based on the request
-  path: paths ending with `/responses` use `ResponsesApiProxy`, all other paths use
-  `ChatCompletionsApiProxy` (which falls through to passthrough for non-`/chat/completions` paths).
+  path via `selectProxyClass()`: paths ending with `/responses` use `ResponsesApiProxy`, paths ending
+  with `/chat/completions` use `ChatCompletionsApiProxy`, and all other paths use `PassthroughApiProxy`.
   Proxy instances are lazily created and cached by `(listen port, proxy class)` with
   `kotlinx.coroutines.sync.Mutex` for coroutine-friendly synchronization. A single `HttpClientEngine` is
   shared across all proxy instances and closed on server shutdown via the `ApplicationStopping` monitor event.
@@ -126,11 +129,14 @@ Kotlin Multiplatform project using Gradle version catalogs.
 - `proxy` is engine-agnostic: it uses common Ktor client/I/O APIs and does not include a concrete client engine.
 - `proxy` converts synchronous non-streaming `POST /v1/responses` requests (via `ResponsesApiProxy`)
   and `POST /v1/chat/completions` requests (via `ChatCompletionsApiProxy`).
+- `PassthroughApiProxy` is the explicit unconditional forwarding proxy; it never enters the conversion
+  flow because `needConvert()` always returns false.
 - Requests with `stream=true` are not converted and must be passed through unchanged.
 - For the supported conversion paths, `proxy` aggregates the final state in memory and only then writes
   the downstream non-streaming JSON response. It does not stream partial JSON fragments downstream.
-- `ResponsesApiProxy` and `ChatCompletionsApiProxy` extend `AbstractApiProxy`; subclasses implement
-  `needConvert()`, `rewriteBody()`, `createAccumulator()`, and `buildResult()` for protocol-specific conversion.
+- `ResponsesApiProxy`, `ChatCompletionsApiProxy`, and `PassthroughApiProxy` extend `AbstractApiProxy`;
+  conversion proxies implement `needConvert()`, `rewriteBody()`, `createAccumulator()`, and `buildResult()`
+  for protocol-specific conversion.
 - `ResponseAccumulator` and `ChatCompletionsAccumulator` both implement the `SseAccumulator` interface.
   They are not thread-safe — `accumulate()` must be called from a single coroutine.
 - `cli` serves plain HTTP listeners with Ktor CIO server; its upstream client engine is CIO on JVM
