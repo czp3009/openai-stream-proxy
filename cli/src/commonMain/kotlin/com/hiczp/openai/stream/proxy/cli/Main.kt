@@ -13,8 +13,6 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.util.*
-import kotlinx.atomicfu.locks.SynchronizedObject
-import kotlinx.atomicfu.locks.synchronized
 import kotlinx.cli.ArgParser
 import kotlinx.cli.ArgParser.OptionPrefixStyle
 import kotlinx.cli.ArgType
@@ -22,6 +20,8 @@ import kotlinx.cli.default
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.reflect.KClass
 import kotlin.time.DurationUnit
 import kotlin.time.TimeMark
@@ -119,7 +119,7 @@ internal fun Application.configureProxyServer(
 ) {
     val ruleCache = rules.associateBy { it.listenPort }
     val proxyCache = mutableMapOf<Pair<Int, KClass<out AbstractApiProxy>>, AbstractApiProxy>()
-    val proxyCacheLock = SynchronizedObject()
+    val proxyCacheLock = Mutex()
 
     install(HttpRequestLifecycle) {
         cancelCallOnClose = true
@@ -140,7 +140,7 @@ internal fun Application.configureProxyServer(
                     ChatCompletionsApiProxy::class
                 }
 
-                val proxy = synchronized(proxyCacheLock) {
+                val proxy = proxyCacheLock.withLock {
                     proxyCache.getOrPut(port to proxyClass) {
                         val rule = ruleCache.getValue(port)
                         when (proxyClass) {

@@ -4,7 +4,6 @@ import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.kotlinSerialization)
-    alias(libs.plugins.atomicfu)
     alias(libs.plugins.shadow)
 }
 
@@ -47,7 +46,7 @@ kotlin {
             implementation(libs.ktor.server.status.pages)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.cli)
-            implementation(libs.kotlinx.atomicfu)
+            implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlin.logging)
         }
         jvmMain.dependencies {

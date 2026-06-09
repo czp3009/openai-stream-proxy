@@ -59,8 +59,10 @@ Kotlin Multiplatform project using Gradle version catalogs.
   downstream non-streaming `POST /v1/responses` requests are rewritten to upstream `stream: true`,
   the upstream SSE is consumed by `ResponseAccumulator` (which records `response.output_item.done`
   items as an output fallback and waits for a terminal event: `response.completed`,
-  `response.failed`, or `response.incomplete`), the terminal `Response` state is assembled in
-  memory, and a non-streaming JSON response is sent downstream.
+  `response.failed`, or `response.incomplete`), and the terminal state is assembled in memory.
+  Completed and incomplete terminal responses are returned as non-streaming Response JSON; failed
+  terminal responses with an upstream error object are returned as OpenAI-compatible error JSON with
+  an HTTP status mapped from `error.code`.
   Requests that do not match the conversion criteria (non-POST, non-`/responses` path, non-JSON
   content type, missing `model` field, or `stream=true`) are passed through unchanged via
   `passthrough()`.
@@ -92,16 +94,16 @@ Kotlin Multiplatform project using Gradle version catalogs.
   path: paths ending with `/responses` use `ResponsesApiProxy`, all other paths use
   `ChatCompletionsApiProxy` (which falls through to passthrough for non-`/chat/completions` paths).
   Proxy instances are lazily created and cached by `(listen port, proxy class)` with
-  `kotlinx-atomicfu` `synchronized` for thread safety. A single `HttpClientEngine` is shared across
-  all proxy instances and closed on server shutdown via the `ApplicationStopping` monitor event.
+  `kotlinx.coroutines.sync.Mutex` for coroutine-friendly synchronization. A single `HttpClientEngine` is
+  shared across all proxy instances and closed on server shutdown via the `ApplicationStopping` monitor event.
   `proxy()` injects Ktor's response operation through its `respond` parameter; upstream failures
   are handled by `AbstractApiProxy` (including passthrough pre-response I/O failures → 504
   `upstream_timeout`), exceptions → 500 `internal_error` via StatusPages
   (`ErrorHandler.kt` uses `CancellationException`-aware handler). Platform-specific shutdown: JVM uses
   `Runtime.addShutdownHook`, native registers `SIGTERM`/`SIGINT` handlers; servers stopped
-  with 2s grace / 5s timeout. Uses `kotlinx-cli` for argument parsing, `kotlinx-atomicfu` for
-  cross-platform synchronization, and the `shadow` Gradle plugin for JVM fat JAR packaging. Targets
-  JVM, mingwX64, linuxX64, macosArm64 (not linuxArm64).
+  with 2s grace / 5s timeout. Uses `kotlinx-cli` for argument parsing, `kotlinx.coroutines`
+  for shutdown coordination and cache synchronization, and the `shadow` Gradle plugin for JVM fat JAR
+  packaging. Targets JVM, mingwX64, linuxX64, macosArm64 (not linuxArm64).
 
 #### Auxiliary
 
