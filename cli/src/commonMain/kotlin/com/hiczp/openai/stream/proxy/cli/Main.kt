@@ -5,7 +5,9 @@ import com.hiczp.openai.stream.proxy.ChatCompletionsApiProxy
 import com.hiczp.openai.stream.proxy.PassthroughApiProxy
 import com.hiczp.openai.stream.proxy.ResponsesApiProxy
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.ktor.client.*
 import io.ktor.client.engine.*
+import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -13,6 +15,7 @@ import io.ktor.server.http.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.server.websocket.*
 import io.ktor.util.*
 import kotlinx.cli.ArgParser
 import kotlinx.cli.ArgParser.OptionPrefixStyle
@@ -27,6 +30,8 @@ import kotlin.reflect.KClass
 import kotlin.time.DurationUnit
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
+import io.ktor.client.plugins.websocket.WebSockets as ClientWebSockets
+import io.ktor.client.plugins.websocket.webSocket as clientWebSocket
 import io.ktor.server.cio.CIO as ServerCIO
 
 private val logger = KotlinLogging.logger("com.hiczp.openai.stream.proxy.cli.Application")
@@ -121,12 +126,56 @@ internal fun Application.configureProxyServer(
     val ruleCache = rules.associateBy { it.listenPort }
     val proxyCache = mutableMapOf<Pair<Int, KClass<out AbstractApiProxy>>, AbstractApiProxy>()
     val proxyCacheLock = Mutex()
+    val webSocketClient = HttpClient(clientEngine) {
+        install(ClientWebSockets) {
+            channels {
+                incoming = bounded(capacity = 0)
+                outgoing = bounded(capacity = 0)
+            }
+        }
+    }
 
     install(HttpRequestLifecycle) {
         cancelCallOnClose = true
     }
+    install(WebSockets) {
+        channels {
+            incoming = bounded(capacity = 0)
+            outgoing = bounded(capacity = 0)
+        }
+    }
     installErrorHandler()
     routing {
+        webSocket("/{...}") downstream@{
+            val startMark = timeSource.markNow()
+            call.attributes.put(RequestStartMarkKey, startMark)
+
+            val port = call.request.local.localPort
+            val uri = call.request.uri
+            val rule = ruleCache.getValue(port)
+            val upstreamUrl = URLBuilder(Url(rule.upstreamUrl)).apply {
+                protocol = when (protocol) {
+                    URLProtocol.HTTP -> URLProtocol.WS
+                    URLProtocol.HTTPS -> URLProtocol.WSS
+                    else -> protocol
+                }
+            }.buildString().trimEnd('/') + uri
+
+            logger.info { "WebSocket [${call.request.host()}:${call.request.port()} -> $upstreamUrl] $uri" }
+
+            try {
+                webSocketClient.clientWebSocket({
+                    url(upstreamUrl)
+                    appendForwardedWebSocketHeaders(call.request.headers)
+                }) {
+                    proxyWebSocketSessions(downstreamSession = this@downstream, upstreamSession = this)
+                }
+            } finally {
+                val elapsed = startMark.elapsedNow().toInt(DurationUnit.MILLISECONDS)
+                logger.info { "WebSocket completed: $upstreamUrl (${elapsed}ms)" }
+            }
+        }
+
         route("/{...}") {
             handle {
                 val startMark = timeSource.markNow()

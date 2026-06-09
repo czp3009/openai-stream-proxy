@@ -1,10 +1,14 @@
 # openai-stream-proxy
 
-A transparent proxy that converts non-streaming OpenAI API requests into upstream SSE streaming requests, aggregates the
-stream in memory, and sends a non-streaming response to the downstream client.
+A transparent proxy for OpenAI-compatible HTTP and WebSocket traffic. For supported HTTP JSON endpoints, it converts
+non-streaming OpenAI API requests into upstream SSE streaming requests, aggregates the stream in memory, and sends a
+non-streaming response to the downstream client.
 
 Supports the **Responses API** (`/v1/responses`) and **Chat Completions API** (`/v1/chat/completions`). Requests already
 using `stream=true` are passed through unchanged.
+
+WebSocket requests are proxied to the corresponding upstream `ws://` or `wss://` URL. Data is forwarded in both
+directions as it arrives, with backpressure and without payload rewriting or whole-session buffering.
 
 This project only converts between non-streaming and streaming modes. It does not support protocol conversion, including
 but not limited to converting the Responses protocol to the Chat Completions protocol, or converting the Responses
@@ -44,6 +48,7 @@ upstream. With the config above:
 - `POST http://localhost:8080/v1/responses` → `POST https://api.openai.com/v1/responses`
 - `POST http://localhost:8080/v1/chat/completions` → `POST https://api.openai.com/v1/chat/completions`
 - `POST http://localhost:8080/v1/other/path` → `POST https://api.openai.com/v1/other/path` (passthrough, not converted)
+- `WS ws://localhost:8080/v1/realtime?model=...` → `WSS wss://api.openai.com/v1/realtime?model=...`
 - `POST http://localhost:8081/v1/responses` → `POST https://some-other-provider.example.com/v1/responses`
 
 The proxy listens on the configured ports and converts non-streaming requests whose path ends with `/responses` or
@@ -70,6 +75,11 @@ Content-Type: application/json
 
 The upstream SSE stream is then aggregated in memory and returned as a single non-streaming JSON response to the
 downstream client.
+
+For WebSocket requests, the proxy keeps the same path and query string, maps `http://` upstream URLs to `ws://` and
+`https://` upstream URLs to `wss://`, and forwards request headers such as `Authorization`. WebSocket traffic is
+forwarded bidirectionally in streaming mode with backpressure so the proxy can handle long-lived connections with low
+memory usage.
 
 The request path is appended to `upstreamUrl`, so `upstreamUrl` typically should not include `/v1`.
 
@@ -114,6 +124,7 @@ The fat JAR is output to `cli/build/libs/`. Native executables are output to
 
 The `proxy` module is a Kotlin Multiplatform library you can embed in your own application. It is engine-agnostic — you
 provide the Ktor `HttpClientEngine`, and the library handles request rewriting, SSE aggregation, and response assembly.
+WebSocket passthrough is implemented by the CLI module, not by the `proxy` library classes.
 
 ### Gradle Dependency
 

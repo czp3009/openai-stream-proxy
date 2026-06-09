@@ -44,6 +44,8 @@ kotlin {
             implementation(libs.ktor.server.core)
             implementation(libs.ktor.server.cio)
             implementation(libs.ktor.server.status.pages)
+            implementation(libs.ktor.server.websockets)
+            implementation(libs.ktor.client.websockets)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.cli)
             implementation(libs.kotlinx.coroutines.core)

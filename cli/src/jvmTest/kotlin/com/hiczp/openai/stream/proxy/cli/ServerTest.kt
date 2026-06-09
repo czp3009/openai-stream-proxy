@@ -5,24 +5,40 @@ import com.hiczp.openai.stream.proxy.PassthroughApiProxy
 import com.hiczp.openai.stream.proxy.ResponsesApiProxy
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.websocket.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.http.content.*
+import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.websocket.*
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import io.ktor.client.plugins.websocket.WebSockets as ClientWebSockets
 import io.ktor.server.cio.CIO as ServerCIO
+import io.ktor.server.websocket.WebSockets as ServerWebSockets
+import io.ktor.server.websocket.webSocket as serverWebSocket
 
 class ServerTest {
+    private data class RawWebSocketFrame(
+        val opcode: Int,
+        val payload: ByteArray,
+    )
+
     private val responsesSseResponseText: ByteArray by lazy {
         javaClass.getResourceAsStream("/com/hiczp/openai/stream/proxy/cli/responses_sse.txt")!!.readAllBytes()
     }
@@ -36,6 +52,86 @@ class ServerTest {
     private fun eventStreamContent(body: ByteArray) = object : OutgoingContent.ByteArrayContent() {
         override val contentType = ContentType("text", "event-stream")
         override fun bytes(): ByteArray = body
+    }
+
+    private fun readHttpHeaders(socket: Socket): String {
+        val delimiter = "\r\n\r\n".encodeToByteArray()
+        val bytes = mutableListOf<Byte>()
+        var matched = 0
+        while (matched < delimiter.size) {
+            val byte = socket.getInputStream().read()
+            if (byte == -1) break
+            bytes += byte.toByte()
+            matched = if (byte.toByte() == delimiter[matched]) matched + 1 else 0
+        }
+        return bytes.toByteArray().decodeToString()
+    }
+
+    private fun readRawWebSocketFrameOrNull(socket: Socket): RawWebSocketFrame? {
+        val input = socket.getInputStream()
+        val firstByte = input.read()
+        if (firstByte == -1) return null
+
+        val secondByte = input.read()
+        if (secondByte == -1) return RawWebSocketFrame(firstByte and 0x0f, ByteArray(0))
+
+        val masked = secondByte and 0x80 != 0
+        val payloadLength = when (val length = secondByte and 0x7f) {
+            126 -> input.readNBytes(2).fold(0) { acc, byte -> (acc shl 8) or (byte.toInt() and 0xff) }
+            127 -> input.readNBytes(8).fold(0L) { acc, byte -> (acc shl 8) or (byte.toLong() and 0xff) }
+                .also { require(it <= Int.MAX_VALUE) { "Frame payload too large for test: $it" } }
+                .toInt()
+
+            else -> length
+        }
+        val mask = if (masked) input.readNBytes(4) else null
+        val payload = input.readNBytes(payloadLength)
+        if (mask != null) {
+            payload.forEachIndexed { index, byte ->
+                payload[index] = (byte.toInt() xor mask[index % mask.size].toInt()).toByte()
+            }
+        }
+        return RawWebSocketFrame(firstByte and 0x0f, payload)
+    }
+
+    private fun readRawWebSocketFrameOrNullWithTimeout(socket: Socket): RawWebSocketFrame? {
+        val previousTimeout = socket.soTimeout
+        socket.soTimeout = 5_000
+        return try {
+            readRawWebSocketFrameOrNull(socket)
+        } catch (_: SocketTimeoutException) {
+            error("Timed out waiting for downstream WebSocket close or TCP close")
+        } finally {
+            socket.soTimeout = previousTimeout
+        }
+    }
+
+    private fun Socket.writeWebSocketHandshake(port: Int) {
+        val request = buildString {
+            append("GET /v1/realtime HTTP/1.1\r\n")
+            append("Host: 127.0.0.1:$port\r\n")
+            append("Upgrade: websocket\r\n")
+            append("Connection: Upgrade\r\n")
+            append("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n")
+            append("Sec-WebSocket-Version: 13\r\n")
+            append("\r\n")
+        }
+        getOutputStream().write(request.encodeToByteArray())
+        getOutputStream().flush()
+    }
+
+    private fun Socket.writeMaskedTextFrame(text: String) {
+        val payload = text.encodeToByteArray()
+        val mask = byteArrayOf(1, 2, 3, 4)
+        val frame = ByteArray(2 + mask.size + payload.size)
+        frame[0] = 0x81.toByte()
+        frame[1] = (0x80 or payload.size).toByte()
+        mask.copyInto(frame, destinationOffset = 2)
+        payload.forEachIndexed { index, byte ->
+            frame[2 + mask.size + index] = (byte.toInt() xor mask[index % mask.size].toInt()).toByte()
+        }
+        getOutputStream().write(frame)
+        getOutputStream().flush()
     }
 
     private fun startProxyServer(downstreamPort: Int, upstreamPort: Int) =
@@ -180,6 +276,184 @@ class ServerTest {
             upstreamServer.stop()
         }
     }
+
+    @Test
+    fun `configureProxyServer forwards websocket frames to upstream`() = runBlocking {
+        val upstreamPort = findFreePort()
+        val downstreamPort = findFreePort()
+        val capturedUri = CompletableDeferred<String>()
+        val capturedHost = CompletableDeferred<String?>()
+        val capturedAuthorization = CompletableDeferred<String?>()
+        val capturedOpenAiBeta = CompletableDeferred<String?>()
+        val capturedProtocol = CompletableDeferred<String?>()
+        val capturedRemoveMe = CompletableDeferred<String?>()
+        val capturedText = CompletableDeferred<String>()
+        val capturedBinary = CompletableDeferred<ByteArray>()
+
+        val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
+            install(ServerWebSockets)
+            routing {
+                serverWebSocket("/{...}") {
+                    capturedUri.complete(call.request.uri)
+                    capturedHost.complete(call.request.headers[HttpHeaders.Host])
+                    capturedAuthorization.complete(call.request.headers[HttpHeaders.Authorization])
+                    capturedOpenAiBeta.complete(call.request.headers["OpenAI-Beta"])
+                    capturedProtocol.complete(call.request.headers[HttpHeaders.SecWebSocketProtocol])
+                    capturedRemoveMe.complete(call.request.headers["X-Remove-Me"])
+
+                    val textFrame = incoming.receive() as Frame.Text
+                    capturedText.complete(textFrame.readText())
+                    send(Frame.Text(true, textFrame.data))
+
+                    val binaryFrame = incoming.receive() as Frame.Binary
+                    capturedBinary.complete(binaryFrame.data)
+                    send(Frame.Binary(true, binaryFrame.data))
+                }
+            }
+        }.start()
+        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+            configureProxyServer(
+                CIO.create(),
+                listOf(ProxyRule(downstreamPort, "http://127.0.0.1:$upstreamPort/upstream-base")),
+                600_000L,
+            )
+        }.start()
+
+        val client = HttpClient(CIO) {
+            install(ClientWebSockets)
+        }
+        val binaryPayload = byteArrayOf(1, 2, 3, 4)
+        try {
+            client.webSocket(
+                urlString = "ws://127.0.0.1:$downstreamPort/v1/realtime?model=gpt-realtime",
+                request = {
+                    header(HttpHeaders.Connection, "Upgrade, X-Remove-Me")
+                    header(HttpHeaders.Authorization, "Bearer ws-test")
+                    header("OpenAI-Beta", "realtime=v1")
+                    header(HttpHeaders.SecWebSocketProtocol, "realtime")
+                    header("X-Remove-Me", "remove")
+                },
+            ) {
+                send(Frame.Text("hello"))
+                val echoedText = incoming.receive() as Frame.Text
+                assertEquals("hello", echoedText.readText())
+
+                send(Frame.Binary(true, binaryPayload))
+                val echoedBinary = incoming.receive() as Frame.Binary
+                assertTrue(binaryPayload.contentEquals(echoedBinary.data))
+            }
+
+            assertEquals("/upstream-base/v1/realtime?model=gpt-realtime", capturedUri.await())
+            assertEquals("127.0.0.1:$upstreamPort", capturedHost.await())
+            assertEquals("Bearer ws-test", capturedAuthorization.await())
+            assertEquals("realtime=v1", capturedOpenAiBeta.await())
+            assertEquals(null, capturedProtocol.await())
+            assertEquals(null, capturedRemoveMe.await())
+            assertEquals("hello", capturedText.await())
+            assertTrue(binaryPayload.contentEquals(capturedBinary.await()))
+        } finally {
+            client.close()
+            downstreamServer.stop()
+            upstreamServer.stop()
+        }
+    }
+
+    @Test
+    fun `configureProxyServer closes upstream websocket when downstream disconnects`() = runBlocking {
+        val upstreamPort = findFreePort()
+        val downstreamPort = findFreePort()
+        val upstreamReceived = CompletableDeferred<String>()
+        val upstreamClosed = CompletableDeferred<Unit>()
+
+        val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
+            install(ServerWebSockets)
+            routing {
+                serverWebSocket("/{...}") {
+                    try {
+                        upstreamReceived.complete((incoming.receive() as Frame.Text).readText())
+                        for (frame in incoming) {
+                            if (frame is Frame.Close) break
+                        }
+                    } finally {
+                        upstreamClosed.complete(Unit)
+                    }
+                }
+            }
+        }.start()
+        val clientEngine = CIO.create()
+        val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+            configureProxyServer(
+                clientEngine,
+                listOf(ProxyRule(downstreamPort, "http://127.0.0.1:$upstreamPort")),
+                600_000L,
+            )
+        }.start()
+
+        try {
+            Socket("127.0.0.1", downstreamPort).use { socket ->
+                socket.writeWebSocketHandshake(downstreamPort)
+                assertTrue(readHttpHeaders(socket).startsWith("HTTP/1.1 101"))
+                socket.writeMaskedTextFrame("disconnect")
+                assertEquals("disconnect", upstreamReceived.await())
+            }
+
+            withTimeout(5_000) {
+                upstreamClosed.await()
+            }
+        } finally {
+            downstreamServer.stop()
+            clientEngine.close()
+            upstreamServer.stop()
+        }
+    }
+
+    @Test
+    fun `configureProxyServer accepts downstream websocket before upstream rejects websocket handshake`() =
+        runBlocking {
+            listOf(
+                HttpStatusCode.NotFound,
+                HttpStatusCode.MethodNotAllowed,
+                HttpStatusCode.NotImplemented,
+            ).forEach { upstreamStatus ->
+                val upstreamPort = findFreePort()
+                val downstreamPort = findFreePort()
+                val upstreamServer = embeddedServer(ServerCIO, port = upstreamPort) {
+                    routing {
+                        get("/{...}") {
+                            call.respondText("upstream ${upstreamStatus.value}", status = upstreamStatus)
+                        }
+                    }
+                }.start()
+                val clientEngine = CIO.create()
+                val downstreamServer = embeddedServer(ServerCIO, port = downstreamPort) {
+                    configureProxyServer(
+                        clientEngine,
+                        listOf(ProxyRule(downstreamPort, "http://127.0.0.1:$upstreamPort")),
+                        600_000L,
+                    )
+                }.start()
+
+                try {
+                    Socket("127.0.0.1", downstreamPort).use { socket ->
+                        socket.writeWebSocketHandshake(downstreamPort)
+
+                        val downstreamHandshake = readHttpHeaders(socket)
+                        assertTrue(
+                            downstreamHandshake.startsWith("HTTP/1.1 101"),
+                            "Downstream should already receive 101 for upstream ${upstreamStatus.value}: $downstreamHandshake",
+                        )
+                        assertNull(
+                            readRawWebSocketFrameOrNullWithTimeout(socket),
+                            "Proxy should close TCP without forwarding upstream ${upstreamStatus.value} as HTTP response",
+                        )
+                    }
+                } finally {
+                    downstreamServer.stop()
+                    clientEngine.close()
+                    upstreamServer.stop()
+                }
+            }
+        }
 
     @Test
     fun `proxy returns aggregated response for valid SSE upstream`() = runBlocking {
