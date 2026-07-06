@@ -1,0 +1,332 @@
+name: Publish npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "npm package target to publish"
+        required: true
+        type: choice
+        default: linuxX64
+        options:
+          - linuxX64
+          - mingwX64
+          - macosArm64
+          - main
+          - all-platforms
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Cache Gradle/JVM and Kotlin/Native
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Read project version
+        id: version
+        run: |
+          version="$(./gradlew -q --console=plain :printRootVersion)"
+
+          if [[ -z "$version" || "$version" == "unspecified" ]]; then
+            echo "Invalid project version: $version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Project version: $version" >> "$GITHUB_STEP_SUMMARY"
+
+  linux-x64:
+    needs: version
+    if: ${{ inputs.target == 'linuxX64' || inputs.target == 'all-platforms' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Cache Gradle/JVM and Kotlin/Native
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Check npm package
+        id: npm-package
+        env:
+          PACKAGE_NAME: "@czp3009/openai-stream-proxy-linux_x64"
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published; skipping." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure npm authentication
+        if: ${{ steps.npm-package.outputs.exists == 'false' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "NPM_TOKEN secret is required to publish to npm." >&2
+            exit 1
+          fi
+
+          printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
+
+      - name: Publish linuxX64 npm package
+        if: ${{ steps.npm-package.outputs.exists == 'false' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: ./gradlew :cli:publishKotlinNativeNpmLinuxX64Package
+
+  windows-x64:
+    needs: version
+    if: ${{ inputs.target == 'mingwX64' || inputs.target == 'all-platforms' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Cache Gradle/JVM and Kotlin/Native
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Check npm package
+        id: npm-package
+        env:
+          PACKAGE_NAME: "@czp3009/openai-stream-proxy-mingw_x64"
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          npm view "$env:PACKAGE_NAME@$env:PACKAGE_VERSION" version *> $null
+
+          if ($LASTEXITCODE -eq 0) {
+            "exists=true" >> $env:GITHUB_OUTPUT
+            "$env:PACKAGE_NAME@$env:PACKAGE_VERSION is already published; skipping." >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "exists=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Configure npm authentication
+        if: ${{ steps.npm-package.outputs.exists == 'false' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NODE_AUTH_TOKEN)) {
+            Write-Error "NPM_TOKEN secret is required to publish to npm."
+            exit 1
+          }
+
+          "//registry.npmjs.org/:_authToken=$env:NODE_AUTH_TOKEN" | Out-File -FilePath "$env:USERPROFILE\.npmrc" -Encoding ascii
+
+      - name: Publish mingwX64 npm package
+        if: ${{ steps.npm-package.outputs.exists == 'false' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: .\gradlew.bat :cli:publishKotlinNativeNpmMingwX64Package
+
+  macos-arm64:
+    needs: version
+    if: ${{ inputs.target == 'macosArm64' || inputs.target == 'all-platforms' }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Cache Gradle/JVM and Kotlin/Native
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Check npm package
+        id: npm-package
+        env:
+          PACKAGE_NAME: "@czp3009/openai-stream-proxy-macos_arm64"
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published; skipping." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure npm authentication
+        if: ${{ steps.npm-package.outputs.exists == 'false' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "NPM_TOKEN secret is required to publish to npm." >&2
+            exit 1
+          fi
+
+          printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
+
+      - name: Publish macosArm64 npm package
+        if: ${{ steps.npm-package.outputs.exists == 'false' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: ./gradlew :cli:publishKotlinNativeNpmMacosArm64Package
+
+  main:
+    needs: version
+    if: ${{ inputs.target == 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Cache Gradle/JVM and Kotlin/Native
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Check npm package
+        id: npm-package
+        env:
+          PACKAGE_NAME: "@czp3009/openai-stream-proxy"
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published; skipping." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify platform packages exist
+        if: ${{ steps.npm-package.outputs.exists == 'false' }}
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          missing=false
+
+          for package_name in \
+            "@czp3009/openai-stream-proxy-linux_x64" \
+            "@czp3009/openai-stream-proxy-macos_arm64" \
+            "@czp3009/openai-stream-proxy-mingw_x64"
+          do
+            if npm view "${package_name}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+              echo "${package_name}@${PACKAGE_VERSION} exists."
+            else
+              echo "${package_name}@${PACKAGE_VERSION} is missing." >&2
+              missing=true
+            fi
+          done
+
+          if [[ "$missing" == "true" ]]; then
+            echo "Publish missing platform packages before publishing the main package." >&2
+            exit 1
+          fi
+
+      - name: Configure npm authentication
+        if: ${{ steps.npm-package.outputs.exists == 'false' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "NPM_TOKEN secret is required to publish to npm." >&2
+            exit 1
+          fi
+
+          printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
+
+      - name: Publish main npm package
+        if: ${{ steps.npm-package.outputs.exists == 'false' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: ./gradlew :cli:publishKotlinNativeNpmMainPackage

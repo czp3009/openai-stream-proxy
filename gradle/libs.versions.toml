@@ -10,6 +10,7 @@ openai-java = "4.36.0"
 
 shadow = "9.4.1"
 maven-publish = "0.36.0"
+kotlin-native-npm-publishing = "0.0.4"
 
 [libraries]
 kotlin-logging = { module = "io.github.oshai:kotlin-logging", version.ref = "kotlin-logging" }
@@ -36,3 +37,4 @@ kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref =
 kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
 mavenPublish = { id = "com.vanniktech.maven.publish", version.ref = "maven-publish" }
+kotlinNativeNpmPublishing = { id = "com.hiczp.kotlin-native-npm-publishing", version.ref = "kotlin-native-npm-publishing" }

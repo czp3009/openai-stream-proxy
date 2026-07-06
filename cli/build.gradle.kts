@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.kotlinSerialization)
     alias(libs.plugins.shadow)
+    alias(libs.plugins.kotlinNativeNpmPublishing)
 }
 
 val nativeEntryPoint = "com.hiczp.openai.stream.proxy.cli.main"
@@ -76,5 +77,27 @@ tasks.shadowJar {
     this.archiveClassifier = "fat"
     this.manifest {
         this.attributes["Main-Class"] = jvmMainClass
+    }
+}
+
+kotlinNativeNpmPublishing {
+    packageName.set("@czp3009/openai-stream-proxy")
+    description.set("Convert OpenAI Responses/ChatCompletions API request from non-stream mode to stream mode")
+    license.set("MIT")
+    repository.set("https://github.com/czp3009/openai-stream-proxy")
+    homepage.set("https://github.com/czp3009/openai-stream-proxy")
+    keywords.addAll("openai", "openai-responses", "proxy", "kotlin-native", "npm", "npx")
+    access.set("public")
+    otp.set(providers.gradleProperty("npmOtp"))
+
+    stage {
+        main {
+            readme()
+            license(rootProject.layout.projectDirectory.file("LICENSE.txt"))
+        }
+
+        platforms {
+            license(rootProject.layout.projectDirectory.file("LICENSE.txt"))
+        }
     }
 }
