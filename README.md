@@ -18,8 +18,11 @@ protocol to the Anthropic protocol.
 
 ## Usage
 
-Download executables from the [releases page](https://github.com/czp3009/openai-stream-proxy/releases)
-or [build from source](#build).
+Choose one of these ways to run the CLI:
+
+- Run with `npx`: `npx @czp3009/openai-stream-proxy`
+- Download executables from the [releases page](https://github.com/czp3009/openai-stream-proxy/releases)
+- [Build from source](#build)
 
 Create `config.json` in the working directory:
 
@@ -86,22 +89,16 @@ WebSocket session ends without a normal close, the downstream WebSocket is close
 
 The request path is appended to `upstreamUrl`, so `upstreamUrl` typically should not include `/v1`.
 
-Then run the executable with the config file in place. For JVM:
+Then run the CLI with the config file in place. For a downloaded or built JVM executable:
 
 ```bash
 java -jar openai-stream-proxy-0.0.7-fat.jar
 ```
 
-For native (Linux):
+For a downloaded or built native executable on Linux:
 
 ```bash
 ./openai-stream-proxy-0.0.7-linuxX64.kexe
-```
-
-Or run the native npm package with `npx`:
-
-```bash
-npx @czp3009/openai-stream-proxy
 ```
 
 The proxy reads `config.json` from the working directory by default. To use a different path:
