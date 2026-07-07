@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: npm-publish-${{ github.ref }}-${{ inputs.target }}
+  group: npm-publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -266,15 +266,14 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Cache Gradle/JVM and Kotlin/Native
+      - name: Cache Gradle/JVM
         uses: actions/cache@v5
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-            ~/.konan
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
-          restore-keys: ${{ runner.os }}-gradle-
+          key: ${{ runner.os }}-gradle-main-npm-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-main-npm-
 
       - name: Configure npm authentication
         env:

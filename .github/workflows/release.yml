@@ -43,7 +43,56 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: .github/scripts/check-release-version.sh
 
-  release:
+  build-jvm:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Cache Gradle/JVM
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-jvm-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-jvm-
+
+      - name: Run JVM tests
+        run: ./gradlew :proxy:jvmTest :cli:jvmTest
+
+      - name: Build JVM fat JAR
+        run: ./gradlew :cli:shadowJar
+
+      - name: Collect JVM release asset
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          mkdir -p release-assets
+
+          jar="cli/build/libs/openai-stream-proxy-${VERSION}-fat.jar"
+
+          test -f "$jar"
+          cp "$jar" release-assets/
+
+          find release-assets -maxdepth 1 -type f -print | sort
+
+      - name: Upload JVM release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-jvm
+          path: release-assets/*
+          if-no-files-found: error
+
+  build-linux-x64:
     needs: check
     if: needs.check.outputs.should_release == 'true'
     runs-on: ubuntu-latest
@@ -67,34 +116,163 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
           restore-keys: ${{ runner.os }}-gradle-
 
-      - name: Run Gradle checks
-        run: ./gradlew check
+      - name: Build linuxX64 native executable
+        run: ./gradlew :cli:linkReleaseExecutableLinuxX64
 
-      - name: Build JVM fat JAR
-        run: ./gradlew :cli:shadowJar
-
-      - name: Build native executables
-        run: |
-          ./gradlew \
-            :cli:linkReleaseExecutableLinuxX64 \
-            :cli:linkReleaseExecutableMingwX64
-
-      - name: Collect release assets
+      - name: Collect linuxX64 release asset
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           mkdir -p release-assets
 
-          jar="cli/build/libs/openai-stream-proxy-${VERSION}-fat.jar"
           linux="cli/build/bin/linuxX64/releaseExecutable/openai-stream-proxy-${VERSION}-linuxX64.kexe"
-          windows="cli/build/bin/mingwX64/releaseExecutable/openai-stream-proxy-${VERSION}-mingwX64.exe"
+
+          test -f "$linux"
+          chmod +x "$linux"
+          cp "$linux" release-assets/
+
+          find release-assets -maxdepth 1 -type f -print | sort
+
+      - name: Upload linuxX64 release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-x64
+          path: release-assets/*
+          if-no-files-found: error
+
+  build-windows-x64:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Cache Gradle/JVM and Kotlin/Native
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Build mingwX64 native executable
+        run: .\gradlew.bat :cli:linkReleaseExecutableMingwX64
+
+      - name: Collect mingwX64 release asset
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+
+          $windows = "cli/build/bin/mingwX64/releaseExecutable/openai-stream-proxy-$($env:VERSION)-mingwX64.exe"
+
+          if (-not (Test-Path -LiteralPath $windows -PathType Leaf)) {
+            throw "Missing release asset: $windows"
+          }
+
+          Copy-Item -LiteralPath $windows -Destination release-assets/
+
+          Get-ChildItem -File release-assets | Sort-Object Name | ForEach-Object { $_.FullName }
+
+      - name: Upload mingwX64 release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-windows-x64
+          path: release-assets/*
+          if-no-files-found: error
+
+  build-macos-arm64:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: graalvm
+          java-version: "21"
+
+      - name: Cache Gradle/JVM and Kotlin/Native
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Build macosArm64 native executable
+        run: ./gradlew :cli:linkReleaseExecutableMacosArm64
+
+      - name: Collect macosArm64 release asset
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          mkdir -p release-assets
+
+          macos="cli/build/bin/macosArm64/releaseExecutable/openai-stream-proxy-${VERSION}-macosArm64.kexe"
+
+          test -f "$macos"
+          chmod +x "$macos"
+          cp "$macos" release-assets/
+
+          find release-assets -maxdepth 1 -type f -print | sort
+
+      - name: Upload macosArm64 release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-macos-arm64
+          path: release-assets/*
+          if-no-files-found: error
+
+  release:
+    needs:
+      - check
+      - build-jvm
+      - build-linux-x64
+      - build-windows-x64
+      - build-macos-arm64
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify release assets
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          jar="release-assets/openai-stream-proxy-${VERSION}-fat.jar"
+          linux="release-assets/openai-stream-proxy-${VERSION}-linuxX64.kexe"
+          windows="release-assets/openai-stream-proxy-${VERSION}-mingwX64.exe"
+          macos="release-assets/openai-stream-proxy-${VERSION}-macosArm64.kexe"
 
           test -f "$jar"
           test -f "$linux"
           test -f "$windows"
+          test -f "$macos"
 
-          chmod +x "$linux"
-          cp "$jar" "$linux" "$windows" release-assets/
+          chmod +x "$linux" "$macos"
 
           find release-assets -maxdepth 1 -type f -print | sort
 
