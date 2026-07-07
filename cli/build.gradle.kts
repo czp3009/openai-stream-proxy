@@ -97,6 +97,7 @@ kotlinNativeNpmPublishing {
         }
 
         platforms {
+            readme(layout.projectDirectory.file("README.platform-package.md"))
             license(rootProject.layout.projectDirectory.file("LICENSE.txt"))
         }
     }
