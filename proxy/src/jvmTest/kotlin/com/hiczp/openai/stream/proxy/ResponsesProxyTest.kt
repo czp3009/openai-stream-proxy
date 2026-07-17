@@ -10,7 +10,7 @@ import io.ktor.server.engine.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.*
 import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicReference
@@ -142,7 +142,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `proxy returns 200 for incomplete terminal response events`() = runBlocking {
+    fun `proxy returns 200 for incomplete terminal response events`() = runTest {
         withProxyForSse(sseResource("responses_incomplete_sse.txt")) { downstreamPort ->
             val (status, body) = postResponse(downstreamPort, responsesRequest())
 
@@ -152,7 +152,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `proxy maps failed terminal response events to HTTP errors`() = runBlocking {
+    fun `proxy maps failed terminal response events to HTTP errors`() = runTest {
         class Case(
             val sseData: ByteArray,
             val expectedStatus: HttpStatusCode,
@@ -206,7 +206,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `proxy passes through failed terminal response when error is missing`() = runBlocking {
+    fun `proxy passes through failed terminal response when error is missing`() = runTest {
         withProxyForSse(failedResponseWithoutErrorSse()) { downstreamPort ->
             val (status, body) = postResponse(downstreamPort, responsesRequest())
 
@@ -217,7 +217,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `proxy preserves upstream headers when failed terminal response is converted to error`() = runBlocking {
+    fun `proxy preserves upstream headers when failed terminal response is converted to error`() = runTest {
         val upstreamHeaders = Headers.build {
             append(upstreamRequestIdHeader, "req_failed")
             append("Retry-After", "3")
@@ -252,7 +252,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `proxy converts non-streaming request and aggregates SSE response`() = runBlocking {
+    fun `proxy converts non-streaming request and aggregates SSE response`() = runTest {
         withProxyForSse(sseResponseText) { downstreamPort ->
             val client = HttpClient(CIO.create())
             val response = client.post("http://127.0.0.1:$downstreamPort/v1/responses") {
@@ -270,7 +270,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `passthrough when request already has stream true`() = runBlocking {
+    fun `passthrough when request already has stream true`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
 
@@ -307,7 +307,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `proxy returns 502 for incomplete SSE stream`() = runBlocking {
+    fun `proxy returns 502 for incomplete SSE stream`() = runTest {
         val incompleteSseData = (
                 "event: response.output_item.done\n" +
                         "data: ${
@@ -330,7 +330,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `proxy returns 502 when upstream is unreachable`() = runBlocking {
+    fun `proxy returns 502 when upstream is unreachable`() = runTest {
         val downstreamPort = findFreePort()
         val unreachablePort = findFreePort()
 
@@ -352,7 +352,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `query params are forwarded in convert flow`() = runBlocking {
+    fun `query params are forwarded in convert flow`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedUri = AtomicReference<String>()
@@ -390,7 +390,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `query params are forwarded in passthrough flow`() = runBlocking {
+    fun `query params are forwarded in passthrough flow`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedUri = AtomicReference<String>()
@@ -425,7 +425,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `request headers are forwarded to upstream in convert flow`() = runBlocking {
+    fun `request headers are forwarded to upstream in convert flow`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedUserAgent = AtomicReference<String>()
@@ -464,7 +464,7 @@ class ResponsesProxyTest {
     }
 
     @Test
-    fun `request headers are forwarded to upstream in passthrough flow`() = runBlocking {
+    fun `request headers are forwarded to upstream in passthrough flow`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedUserAgent = AtomicReference<String>()

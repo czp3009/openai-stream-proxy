@@ -9,7 +9,7 @@ import io.ktor.server.engine.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.*
 import java.net.ServerSocket
 import java.util.concurrent.ConcurrentHashMap
@@ -27,7 +27,7 @@ class PassthroughApiProxyTest {
     private fun findFreePort(): Int = ServerSocket(0).use { it.localPort }
 
     @Test
-    fun `passthrough proxy returns upstream status code`() = runBlocking {
+    fun `passthrough proxy returns upstream status code`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
 
@@ -78,7 +78,7 @@ class PassthroughApiProxyTest {
     }
 
     @Test
-    fun `passthrough proxy does not rewrite conversion endpoint requests`() = runBlocking {
+    fun `passthrough proxy does not rewrite conversion endpoint requests`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedBodies = ConcurrentHashMap<String, JsonObject>()

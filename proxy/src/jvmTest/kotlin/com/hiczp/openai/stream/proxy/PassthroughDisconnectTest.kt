@@ -7,6 +7,7 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.*
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
@@ -14,23 +15,47 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import io.ktor.server.cio.CIO as ServerCIO
 
 class PassthroughDisconnectTest {
     private enum class RawUpstreamFailure {
         CloseAfterAccept,
         CloseAfterRequest,
-        CloseAfterStatusOnlyResponse,
+        CloseAfterCompleteEmptyResponse,
         CloseAfterResponseHeaders,
         CloseAfterPartialBody,
     }
 
+    private enum class SocketCloseKind {
+        FIN,
+        RESET,
+    }
+
+    private enum class ResponseFraming {
+        CLOSE_DELIMITED,
+        CONTENT_LENGTH,
+        CHUNKED,
+    }
+
+    private data class RawDownstreamResponse(
+        val status: HttpStatusCode,
+        val body: String,
+        val bodyCompleted: Boolean,
+    )
+
+    private data class RawBody(
+        val text: String,
+        val completed: Boolean,
+    )
+
     private data class RawUpstreamSignals(
         val accepted: CompletableDeferred<Unit> = CompletableDeferred(),
         val requestRead: CompletableDeferred<Unit> = CompletableDeferred(),
-        val statusOnlyResponseWritten: CompletableDeferred<Unit> = CompletableDeferred(),
+        val completeEmptyResponseWritten: CompletableDeferred<Unit> = CompletableDeferred(),
         val responseHeadersWritten: CompletableDeferred<Unit> = CompletableDeferred(),
         val partialBodyWritten: CompletableDeferred<Unit> = CompletableDeferred(),
         val disconnectRequested: CompletableDeferred<Unit> = CompletableDeferred(),
@@ -39,7 +64,7 @@ class PassthroughDisconnectTest {
         fun completeExceptionally(cause: Throwable) {
             accepted.completeExceptionally(cause)
             requestRead.completeExceptionally(cause)
-            statusOnlyResponseWritten.completeExceptionally(cause)
+            completeEmptyResponseWritten.completeExceptionally(cause)
             responseHeadersWritten.completeExceptionally(cause)
             partialBodyWritten.completeExceptionally(cause)
             disconnectRequested.completeExceptionally(cause)
@@ -65,6 +90,8 @@ class PassthroughDisconnectTest {
 
     private suspend fun withFailingRawUpstream(
         failure: RawUpstreamFailure,
+        closeKind: SocketCloseKind = SocketCloseKind.FIN,
+        responseFraming: ResponseFraming = ResponseFraming.CLOSE_DELIMITED,
         block: suspend CoroutineScope.(downstreamPort: Int, signals: RawUpstreamSignals) -> Unit,
     ): Unit = coroutineScope {
         val upstreamSocket = ServerSocket(0)
@@ -87,27 +114,30 @@ class PassthroughDisconnectTest {
                             RawUpstreamFailure.CloseAfterAccept,
                             RawUpstreamFailure.CloseAfterRequest -> signals.disconnectRequested.await()
 
-                            RawUpstreamFailure.CloseAfterStatusOnlyResponse -> {
+                            RawUpstreamFailure.CloseAfterCompleteEmptyResponse -> {
                                 output.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".encodeToByteArray())
                                 output.flush()
-                                signals.statusOnlyResponseWritten.complete(Unit)
+                                signals.completeEmptyResponseWritten.complete(Unit)
                                 signals.disconnectRequested.await()
                             }
 
                             RawUpstreamFailure.CloseAfterResponseHeaders -> {
-                                writePlainResponseHeaders(output)
+                                writePlainResponseHeaders(output, responseFraming)
                                 signals.responseHeadersWritten.complete(Unit)
                                 signals.disconnectRequested.await()
                             }
 
                             RawUpstreamFailure.CloseAfterPartialBody -> {
-                                writePlainResponseHeaders(output)
+                                writePlainResponseHeaders(output, responseFraming)
                                 signals.responseHeadersWritten.complete(Unit)
-                                output.write("partial".encodeToByteArray())
-                                output.flush()
+                                writePartialBody(output, responseFraming)
                                 signals.partialBodyWritten.complete(Unit)
                                 signals.disconnectRequested.await()
                             }
+                        }
+
+                        if (closeKind == SocketCloseKind.RESET) {
+                            socket.setSoLinger(true, 0)
                         }
                     }
                 }
@@ -143,7 +173,7 @@ class PassthroughDisconnectTest {
         downstreamPort: Int,
         expectedBodyFragment: String? = null,
         signals: RawDownstreamSignals = RawDownstreamSignals(),
-    ): Pair<HttpStatusCode, String> = withContext(Dispatchers.IO) {
+    ): RawDownstreamResponse = runInterruptible(Dispatchers.IO) {
         try {
             Socket("127.0.0.1", downstreamPort).use { socket ->
                 socket.getOutputStream().writeRawPassthroughRequest()
@@ -155,7 +185,7 @@ class PassthroughDisconnectTest {
                 signals.responseHeadersRead.complete(Unit)
                 val body = readHttpBody(input, headers, expectedBodyFragment, signals)
                 signals.responseBodyRead.complete(Unit)
-                status to body
+                RawDownstreamResponse(status, body.text, body.completed)
             }
         } catch (e: Throwable) {
             signals.completeExceptionally(e)
@@ -273,18 +303,31 @@ class PassthroughDisconnectTest {
         headers: Map<String, List<String>>,
         expectedBodyFragment: String?,
         signals: RawDownstreamSignals,
-    ): String {
+    ): RawBody {
         val body = ByteArrayOutputStream()
         val transferEncoding = headers["transfer-encoding"].orEmpty().joinToString(",").lowercase()
         val contentLength = headers["content-length"]?.lastOrNull()?.toIntOrNull()
 
-        when {
-            "chunked" in transferEncoding -> readChunkedBody(input, body, expectedBodyFragment, signals)
-            contentLength != null -> readFixedLengthBody(input, body, contentLength, expectedBodyFragment, signals)
-            else -> readCloseDelimitedBody(input, body, expectedBodyFragment, signals)
+        val completed = try {
+            when {
+                "chunked" in transferEncoding -> readChunkedBody(input, body, expectedBodyFragment, signals)
+                contentLength != null -> {
+                    readFixedLengthBody(input, body, contentLength, expectedBodyFragment, signals)
+                    true
+                }
+
+                else -> {
+                    readCloseDelimitedBody(input, body, expectedBodyFragment, signals)
+                    true
+                }
+            }
+        } catch (_: EOFException) {
+            false
+        } catch (_: SocketException) {
+            false
         }
 
-        return body.toByteArray().decodeToString()
+        return RawBody(body.toByteArray().decodeToString(), completed)
     }
 
     private fun readFixedLengthBody(
@@ -325,19 +368,19 @@ class PassthroughDisconnectTest {
         body: ByteArrayOutputStream,
         expectedBodyFragment: String?,
         signals: RawDownstreamSignals,
-    ) {
+    ): Boolean {
         while (true) {
             val sizeLine = try {
                 readHttpLine(input)
             } catch (_: EOFException) {
-                return
+                return false
             }
             val chunkSize = sizeLine.substringBefore(';').trim().toInt(16)
             if (chunkSize == 0) {
                 while (readHttpLine(input).isNotEmpty()) {
                     // Consume trailing headers.
                 }
-                return
+                return true
             }
 
             val chunk = readExactly(input, chunkSize)
@@ -388,11 +431,20 @@ class PassthroughDisconnectTest {
         }
     }
 
-    private fun writePlainResponseHeaders(output: OutputStream) {
+    private fun writePlainResponseHeaders(
+        output: OutputStream,
+        framing: ResponseFraming,
+    ) {
+        val framingHeader = when (framing) {
+            ResponseFraming.CLOSE_DELIMITED -> ""
+            ResponseFraming.CONTENT_LENGTH -> "Content-Length: 8\r\n"
+            ResponseFraming.CHUNKED -> "Transfer-Encoding: chunked\r\n"
+        }
         output.write(
             (
                     "HTTP/1.1 200 OK\r\n" +
                             "Content-Type: text/plain\r\n" +
+                            framingHeader +
                             "Connection: close\r\n" +
                             "\r\n"
                     ).encodeToByteArray()
@@ -400,45 +452,65 @@ class PassthroughDisconnectTest {
         output.flush()
     }
 
+    private fun writePartialBody(
+        output: OutputStream,
+        framing: ResponseFraming,
+    ) {
+        val body = "partial".encodeToByteArray()
+        if (framing == ResponseFraming.CHUNKED) {
+            output.write(body.size.toString(16).encodeToByteArray())
+            output.write("\r\n".encodeToByteArray())
+            output.write(body)
+            output.write("\r\n".encodeToByteArray())
+        } else {
+            output.write(body)
+        }
+        output.flush()
+    }
+
     @Test
-    fun `passthrough returns 504 when upstream IO fails before usable response`() = runBlocking {
+    fun `passthrough returns 504 when upstream IO fails before usable response`() = runTest {
         val failures = listOf(
             RawUpstreamFailure.CloseAfterAccept,
             RawUpstreamFailure.CloseAfterRequest,
         )
 
         failures.forEach { failure ->
-            withFailingRawUpstream(failure) { downstreamPort, signals ->
-                val downstreamSignals = RawDownstreamSignals()
-                val downstreamResponse = async { postPassthroughRaw(downstreamPort, signals = downstreamSignals) }
+            SocketCloseKind.entries.forEach { closeKind ->
+                withFailingRawUpstream(failure, closeKind) { downstreamPort, signals ->
+                    val downstreamSignals = RawDownstreamSignals()
+                    val downstreamResponse = async { postPassthroughRaw(downstreamPort, signals = downstreamSignals) }
 
-                downstreamSignals.requestSent.await()
-                signals.accepted.await()
-                when (failure) {
-                    RawUpstreamFailure.CloseAfterAccept -> Unit
-                    RawUpstreamFailure.CloseAfterRequest -> signals.requestRead.await()
-                    RawUpstreamFailure.CloseAfterStatusOnlyResponse -> signals.statusOnlyResponseWritten.await()
-                    RawUpstreamFailure.CloseAfterResponseHeaders,
-                    RawUpstreamFailure.CloseAfterPartialBody -> error("Unexpected failure case: $failure")
+                    downstreamSignals.requestSent.await()
+                    signals.accepted.await()
+                    when (failure) {
+                        RawUpstreamFailure.CloseAfterAccept -> Unit
+                        RawUpstreamFailure.CloseAfterRequest -> signals.requestRead.await()
+                        RawUpstreamFailure.CloseAfterCompleteEmptyResponse -> signals.completeEmptyResponseWritten.await()
+                        RawUpstreamFailure.CloseAfterResponseHeaders,
+                        RawUpstreamFailure.CloseAfterPartialBody -> error("Unexpected failure case: $failure")
+                    }
+                    signals.disconnectRequested.complete(Unit)
+                    signals.disconnected.await()
+                    downstreamSignals.responseHeadersRead.await()
+                    downstreamSignals.responseBodyRead.await()
+
+                    val response = downstreamResponse.await()
+                    val caseName = "$failure $closeKind"
+                    assertEquals(HttpStatusCode.GatewayTimeout, response.status, caseName)
+                    assertTrue(response.bodyCompleted, caseName)
+                    val body = Json.parseToJsonElement(response.body).jsonObject
+                    val error = body.getValue("error").jsonObject
+                    assertEquals("upstream_timeout", error.getValue("type").jsonPrimitive.content, caseName)
+                    assertEquals("Upstream timed out", error.getValue("message").jsonPrimitive.content, caseName)
                 }
-                signals.disconnectRequested.complete(Unit)
-                signals.disconnected.await()
-                downstreamSignals.responseHeadersRead.await()
-                downstreamSignals.responseBodyRead.await()
-
-                val (status, bodyText) = downstreamResponse.await()
-                assertEquals(HttpStatusCode.GatewayTimeout, status, failure.name)
-                val body = Json.parseToJsonElement(bodyText).jsonObject
-                val error = body.getValue("error").jsonObject
-                assertEquals("upstream_timeout", error.getValue("type").jsonPrimitive.content)
-                assertEquals("Upstream timed out", error.getValue("message").jsonPrimitive.content)
             }
         }
     }
 
     @Test
-    fun `passthrough keeps status when upstream disconnects after status-only response`() = runBlocking {
-        withFailingRawUpstream(RawUpstreamFailure.CloseAfterStatusOnlyResponse) { downstreamPort, signals ->
+    fun `passthrough keeps complete empty response when upstream closes afterwards`() = runTest {
+        withFailingRawUpstream(RawUpstreamFailure.CloseAfterCompleteEmptyResponse) { downstreamPort, signals ->
             val downstreamSignals = RawDownstreamSignals()
             val downstreamResponse = async {
                 postPassthroughRaw(downstreamPort, signals = downstreamSignals)
@@ -447,67 +519,86 @@ class PassthroughDisconnectTest {
             downstreamSignals.requestSent.await()
             signals.accepted.await()
             signals.requestRead.await()
-            signals.statusOnlyResponseWritten.await()
+            signals.completeEmptyResponseWritten.await()
             downstreamSignals.responseHeadersRead.await()
             signals.disconnectRequested.complete(Unit)
             signals.disconnected.await()
             downstreamSignals.responseBodyRead.await()
 
-            val (status, bodyText) = downstreamResponse.await()
-            assertEquals(HttpStatusCode.OK, status)
-            assertEquals("", bodyText)
+            val response = downstreamResponse.await()
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals("", response.body)
+            assertTrue(response.bodyCompleted)
         }
     }
 
     @Test
-    fun `passthrough keeps response when upstream disconnects after response headers`() = runBlocking {
-        withFailingRawUpstream(RawUpstreamFailure.CloseAfterResponseHeaders) { downstreamPort, signals ->
-            val downstreamSignals = RawDownstreamSignals()
-            val downstreamResponse = async {
-                postPassthroughRaw(downstreamPort, signals = downstreamSignals)
+    fun `passthrough terminates downstream for every upstream close and response framing`() = runTest {
+        val completionMismatches = mutableListOf<String>()
+        val disconnectPoints = listOf(
+            RawUpstreamFailure.CloseAfterResponseHeaders,
+            RawUpstreamFailure.CloseAfterPartialBody,
+        )
+
+        disconnectPoints.forEach { disconnectPoint ->
+            ResponseFraming.entries.forEach { responseFraming ->
+                SocketCloseKind.entries.forEach { closeKind ->
+                    withFailingRawUpstream(
+                        failure = disconnectPoint,
+                        closeKind = closeKind,
+                        responseFraming = responseFraming,
+                    ) { downstreamPort, signals ->
+                        val expectedBody = if (disconnectPoint == RawUpstreamFailure.CloseAfterPartialBody) {
+                            "partial"
+                        } else {
+                            ""
+                        }
+                        val downstreamSignals = RawDownstreamSignals()
+                        val downstreamResponse = async {
+                            postPassthroughRaw(
+                                downstreamPort = downstreamPort,
+                                expectedBodyFragment = expectedBody.takeIf { it.isNotEmpty() },
+                                signals = downstreamSignals,
+                            )
+                        }
+
+                        downstreamSignals.requestSent.await()
+                        signals.accepted.await()
+                        signals.requestRead.await()
+                        signals.responseHeadersWritten.await()
+                        downstreamSignals.responseHeadersRead.await()
+                        if (disconnectPoint == RawUpstreamFailure.CloseAfterPartialBody) {
+                            signals.partialBodyWritten.await()
+                            downstreamSignals.expectedBodyFragmentRead.await()
+                        }
+                        signals.disconnectRequested.complete(Unit)
+                        signals.disconnected.await()
+                        downstreamSignals.responseBodyRead.await()
+
+                        val caseName = "$disconnectPoint $responseFraming $closeKind"
+                        val response = downstreamResponse.await()
+                        assertEquals(HttpStatusCode.OK, response.status, caseName)
+                        assertEquals(expectedBody, response.body, caseName)
+                        val expectedCompleted = when {
+                            closeKind == SocketCloseKind.RESET -> false
+                            responseFraming == ResponseFraming.CLOSE_DELIMITED -> true
+                            responseFraming == ResponseFraming.CONTENT_LENGTH -> false
+                            // CIO currently normalizes a chunked response followed by FIN even when
+                            // the terminating zero-size chunk is absent. Either downstream ending is
+                            // acceptable here; the liveness contract is verified by the completed read.
+                            else -> null
+                        }
+                        if (expectedCompleted != null && response.bodyCompleted != expectedCompleted) {
+                            completionMismatches +=
+                                "$caseName expected bodyCompleted=$expectedCompleted but was ${response.bodyCompleted}"
+                        }
+                    }
+                }
             }
-
-            downstreamSignals.requestSent.await()
-            signals.accepted.await()
-            signals.requestRead.await()
-            signals.responseHeadersWritten.await()
-            downstreamSignals.responseHeadersRead.await()
-            signals.disconnectRequested.complete(Unit)
-            signals.disconnected.await()
-            downstreamSignals.responseBodyRead.await()
-
-            val (status, bodyText) = downstreamResponse.await()
-            assertEquals(HttpStatusCode.OK, status)
-            assertEquals("", bodyText)
         }
-    }
-
-    @Test
-    fun `passthrough keeps partial close-delimited body when upstream disconnects during body`() = runBlocking {
-        withFailingRawUpstream(RawUpstreamFailure.CloseAfterPartialBody) { downstreamPort, signals ->
-            val downstreamSignals = RawDownstreamSignals()
-            val downstreamResponse = async {
-                postPassthroughRaw(
-                    downstreamPort,
-                    expectedBodyFragment = "partial",
-                    signals = downstreamSignals,
-                )
-            }
-
-            downstreamSignals.requestSent.await()
-            signals.accepted.await()
-            signals.requestRead.await()
-            signals.responseHeadersWritten.await()
-            signals.partialBodyWritten.await()
-            downstreamSignals.responseHeadersRead.await()
-            downstreamSignals.expectedBodyFragmentRead.await()
-            signals.disconnectRequested.complete(Unit)
-            signals.disconnected.await()
-            downstreamSignals.responseBodyRead.await()
-
-            val (status, bodyText) = downstreamResponse.await()
-            assertEquals(HttpStatusCode.OK, status)
-            assertEquals("partial", bodyText)
-        }
+        assertTrue(
+            completionMismatches.isEmpty(),
+            completionMismatches.joinToString(separator = "\n"),
+        )
     }
 }

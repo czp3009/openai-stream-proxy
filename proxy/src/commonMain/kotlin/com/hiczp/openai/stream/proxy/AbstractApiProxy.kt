@@ -1,6 +1,5 @@
 package com.hiczp.openai.stream.proxy
 
-import com.hiczp.openai.stream.proxy.AbstractApiProxy.Companion.stripHopByHopHeaders
 import io.github.oshai.kotlinlogging.KLogger
 import io.ktor.client.*
 import io.ktor.client.engine.*
@@ -12,6 +11,8 @@ import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.util.*
 import io.ktor.utils.io.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.any
 import kotlinx.io.IOException
 import kotlinx.io.readByteArray
@@ -164,22 +165,35 @@ abstract class AbstractApiProxy(
         }
 
         val accumulator = createAccumulator()
-        var sessionHeaders: Headers? = null
+        val sessionHeaders: Headers
+        var upstreamRequestJob: Job? = null
+        var upstreamSession: ClientSSESession? = null
+        var upstreamClosed = false
 
         try {
-            client.sse({
+            upstreamSession = client.sseSession {
+                // Ktor starts sseSession requests in the client scope. Keep the request job so a
+                // caller cancellation can also stop the request before the session is available.
+                upstreamRequestJob = executionContext
                 this.url(upstreamUrl)
                 this.method = HttpMethod.Post
                 this.headers.appendAll(forwardHeaders)
                 this.contentType(ContentType.Application.Json)
                 this.setBody(rewrittenBody.toString())
-            }) {
-                sessionHeaders = call.response.headers
-                incoming.any { event ->
-                    accumulator.accumulate(event)
-                    accumulator.isTerminated
-                }
             }
+            sessionHeaders = upstreamSession.call.response.headers
+            upstreamSession.incoming.any { event ->
+                accumulator.accumulate(event)
+                accumulator.isTerminated
+            }
+
+            // Ktor's SSE flow treats cancellation as normal flow completion. Restore the caller's
+            // cancellation here so the upstream request is closed through the path below.
+            currentCoroutineContext().ensureActive()
+        } catch (e: CancellationException) {
+            closeUpstreamSse(upstreamRequestJob, upstreamSession, e)
+            upstreamClosed = true
+            throw e
         } catch (e: SSEClientException) {
             val response = e.response
             val cause = e.cause
@@ -214,6 +228,14 @@ abstract class AbstractApiProxy(
             logger.warn { "SSE request IOException for $upstreamUrl: ${e.message}" }
             respondUpstreamError(respond)
             return
+        } finally {
+            if (!upstreamClosed) {
+                closeUpstreamSse(
+                    upstreamRequestJob,
+                    upstreamSession,
+                    CancellationException("Upstream SSE response is no longer needed"),
+                )
+            }
         }
 
         if (!accumulator.isTerminated) {
@@ -222,7 +244,23 @@ abstract class AbstractApiProxy(
             return
         }
 
-        respond(buildResult(accumulator, sessionHeaders ?: error("SSE session completed without response headers")))
+        respond(buildResult(accumulator, sessionHeaders))
+    }
+
+    private suspend fun closeUpstreamSse(
+        requestJob: Job?,
+        session: ClientSSESession?,
+        cause: CancellationException,
+    ) = withContext(NonCancellable) {
+        session?.cancel(cause)
+        session?.call?.cancel(cause)
+        requestJob?.cancel(cause)
+
+        listOfNotNull(
+            session?.coroutineContext?.job,
+            session?.call?.coroutineContext?.job,
+            requestJob,
+        ).distinct().joinAll()
     }
 
     /**

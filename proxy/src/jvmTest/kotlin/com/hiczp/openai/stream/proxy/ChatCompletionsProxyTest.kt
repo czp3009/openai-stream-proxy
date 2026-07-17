@@ -15,6 +15,7 @@ import io.ktor.server.routing.*
 import io.ktor.server.sse.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.*
 import java.io.InputStream
 import java.io.OutputStream
@@ -388,7 +389,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `proxy converts non-streaming request and aggregates SSE response`() = runBlocking {
+    fun `proxy converts non-streaming request and aggregates SSE response`() = runTest {
         withProxyForSse(sseResponseText) { downstreamPort ->
             val (status, body) = postChatCompletion(
                 downstreamPort,
@@ -424,7 +425,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `proxy preserves existing stream options when enabling usage in upstream request`() = runBlocking {
+    fun `proxy preserves existing stream options when enabling usage in upstream request`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedBody = AtomicReference<String>()
@@ -480,7 +481,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `proxy relays non-SSE upstream response from convert flow`() = runBlocking {
+    fun `proxy relays non-SSE upstream response from convert flow`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val upstreamBody = buildJsonObject {
@@ -523,7 +524,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `passthrough when request already has stream true`() = runBlocking {
+    fun `passthrough when request already has stream true`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
 
@@ -560,7 +561,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `passthrough when request is not JSON`() = runBlocking {
+    fun `passthrough when request is not JSON`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedBody = AtomicReference<String>()
@@ -603,7 +604,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `passthrough when JSON request has no model`() = runBlocking {
+    fun `passthrough when JSON request has no model`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val requestBody = buildJsonObject {
@@ -649,7 +650,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `passthrough streams upstream response before upstream completes`() = runBlocking {
+    fun `passthrough streams upstream response before upstream completes`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val upstreamSentFirst = CompletableDeferred<Unit>()
@@ -731,7 +732,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `passthrough returns 504 when upstream disconnects before response headers`() = runBlocking {
+    fun `passthrough returns 504 when upstream disconnects before response headers`() = runTest {
         withGatedPassthroughRawSseUpstream(writeResponseHeaders = false) { downstreamPort, signals ->
             HttpClient(CIO.create()) {
                 install(ClientSSE)
@@ -767,7 +768,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `passthrough keeps started SSE response when upstream disconnects after response headers`() = runBlocking {
+    fun `passthrough keeps started SSE response when upstream disconnects after response headers`() = runTest {
         val events = Collections.synchronizedList(mutableListOf<String>())
 
         withGatedPassthroughRawSseUpstream(
@@ -814,7 +815,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `passthrough keeps started SSE response when upstream disconnects after first event`() = runBlocking {
+    fun `passthrough keeps started SSE response when upstream disconnects after first event`() = runTest {
         val events = Collections.synchronizedList(mutableListOf<String>())
 
         withGatedPassthroughRawSseUpstream(
@@ -868,7 +869,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `proxy returns 502 for incomplete SSE stream`() = runBlocking {
+    fun `proxy returns 502 for incomplete SSE stream`() = runTest {
         val incompleteChunk = buildJsonObject {
             put("id", "chatcmpl-test")
             put("object", "chat.completion.chunk")
@@ -894,7 +895,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `proxy returns 502 when upstream disconnects before SSE events`() = runBlocking {
+    fun `proxy returns 502 when upstream disconnects before SSE events`() = runTest {
         withDisconnectingSseUpstream(ByteArray(0)) { downstreamPort, signals ->
             val downstreamResponse = async {
                 postChatCompletion(downstreamPort, chatCompletionsRequest())
@@ -913,7 +914,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `proxy returns 502 when upstream disconnects before terminal SSE event`() = runBlocking {
+    fun `proxy returns 502 when upstream disconnects before terminal SSE event`() = runTest {
         val partialChunk = buildJsonObject {
             put("id", "chatcmpl-test")
             put("object", "chat.completion.chunk")
@@ -945,7 +946,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `proxy returns 502 when upstream is unreachable`() = runBlocking {
+    fun `proxy returns 502 when upstream is unreachable`() = runTest {
         val downstreamPort = findFreePort()
         val unreachablePort = findFreePort()
 
@@ -970,7 +971,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `query params are forwarded in convert flow`() = runBlocking {
+    fun `query params are forwarded in convert flow`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedUri = AtomicReference<String>()
@@ -1008,7 +1009,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `query params are forwarded in passthrough flow`() = runBlocking {
+    fun `query params are forwarded in passthrough flow`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedUri = AtomicReference<String>()
@@ -1043,7 +1044,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `request headers are forwarded to upstream in convert flow`() = runBlocking {
+    fun `request headers are forwarded to upstream in convert flow`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
         val capturedUserAgent = AtomicReference<String>()
@@ -1082,7 +1083,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `upstream headers are preserved in convert flow`() = runBlocking {
+    fun `upstream headers are preserved in convert flow`() = runTest {
         val upstreamHeaders = Headers.build {
             append("X-Request-Id", "req-123")
             append(HttpHeaders.Connection, "X-Remove-Me")
@@ -1115,7 +1116,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `hop-by-hop response headers are not forwarded in passthrough flow`() = runBlocking {
+    fun `hop-by-hop response headers are not forwarded in passthrough flow`() = runTest {
         val body = "ok".encodeToByteArray()
         val rawResponse = (
                 "HTTP/1.1 200 OK\r\n" +
@@ -1152,7 +1153,7 @@ class ChatCompletionsProxyTest {
     }
 
     @Test
-    fun `non-matching path is passed through`() = runBlocking {
+    fun `non-matching path is passed through`() = runTest {
         val upstreamPort = findFreePort()
         val downstreamPort = findFreePort()
 

@@ -4,6 +4,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -71,8 +72,13 @@ class ConfigTest {
 
     @Test
     fun `throws when file does not exist`() {
-        assertFailsWith<Exception> {
-            loadConfig("nonexistent_config_file_${System.nanoTime()}.json")
+        val isolatedDirectory = Files.createTempDirectory("openai-stream-proxy-config-test-")
+        try {
+            assertFailsWith<Exception> {
+                loadConfig(isolatedDirectory.resolve("missing.json").toString())
+            }
+        } finally {
+            Files.delete(isolatedDirectory)
         }
     }
 

@@ -92,23 +92,23 @@ The request path is appended to `upstreamUrl`, so `upstreamUrl` typically should
 Then run the CLI with the config file in place. For a downloaded or built JVM executable:
 
 ```bash
-java -jar openai-stream-proxy-0.0.7-fat.jar
+java -jar openai-stream-proxy-0.0.8-fat.jar
 ```
 
 For a downloaded or built native executable on Linux:
 
 ```bash
-./openai-stream-proxy-0.0.7-linuxX64.kexe
+./openai-stream-proxy-0.0.8-linuxX64.kexe
 ```
 
 The proxy reads `config.json` from the working directory by default. To use a different path:
 
 ```bash
-java -jar openai-stream-proxy-0.0.7-fat.jar --config-file /path/to/config.json
+java -jar openai-stream-proxy-0.0.8-fat.jar --config-file /path/to/config.json
 # or
-java -jar openai-stream-proxy-0.0.7-fat.jar -c /path/to/config.json
+java -jar openai-stream-proxy-0.0.8-fat.jar -c /path/to/config.json
 # same with native executable
-./openai-stream-proxy-0.0.7-linuxX64.kexe --config-file /path/to/config.json
+./openai-stream-proxy-0.0.8-linuxX64.kexe --config-file /path/to/config.json
 # or with npx
 npx @czp3009/openai-stream-proxy --config-file /path/to/config.json
 ```
@@ -138,7 +138,7 @@ WebSocket passthrough is implemented by the CLI module, not by the `proxy` libra
 
 ```kotlin
 dependencies {
-   implementation("com.hiczp:openai-stream-proxy:0.0.7")
+   implementation("com.hiczp:openai-stream-proxy:0.0.8")
 }
 ```
 

@@ -11,6 +11,7 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.*
 import java.io.InputStream
 import java.io.OutputStream
@@ -36,6 +37,17 @@ class ProxyDisconnectTest {
         CloseAfterStatusLine,
         CloseAfterSseHeaders,
         CloseAfterPartialSseEvent,
+    }
+
+    private enum class SocketCloseKind {
+        FIN,
+        RESET,
+    }
+
+    private enum class ResponseFraming {
+        CLOSE_DELIMITED,
+        CONTENT_LENGTH,
+        CHUNKED,
     }
 
     private data class RawUpstreamSignals(
@@ -103,6 +115,8 @@ class ProxyDisconnectTest {
     private suspend fun withFailingRawUpstream(
         apiCase: ApiCase,
         failure: RawUpstreamFailure,
+        closeKind: SocketCloseKind,
+        responseFraming: ResponseFraming,
         block: suspend CoroutineScope.(downstreamPort: Int, signals: RawUpstreamSignals) -> Unit,
     ): Unit = coroutineScope {
         val upstreamSocket = ServerSocket(0)
@@ -143,19 +157,30 @@ class ProxyDisconnectTest {
                             }
 
                             RawUpstreamFailure.CloseAfterSseHeaders -> {
-                                writeSseResponseHeaders(output)
+                                writeSseResponseHeaders(
+                                    output = output,
+                                    framing = responseFraming,
+                                    contentLength = apiCase.partialSseData.size + 1,
+                                )
                                 signals.responseHeadersWritten.complete(Unit)
                                 signals.disconnectRequested.await()
                             }
 
                             RawUpstreamFailure.CloseAfterPartialSseEvent -> {
-                                writeSseResponseHeaders(output)
+                                writeSseResponseHeaders(
+                                    output = output,
+                                    framing = responseFraming,
+                                    contentLength = apiCase.partialSseData.size + 1,
+                                )
                                 signals.responseHeadersWritten.complete(Unit)
-                                output.write(apiCase.partialSseData)
-                                output.flush()
+                                writePartialSseBody(output, responseFraming, apiCase.partialSseData)
                                 signals.partialBodyWritten.complete(Unit)
                                 signals.disconnectRequested.await()
                             }
+                        }
+
+                        if (closeKind == SocketCloseKind.RESET) {
+                            socket.setSoLinger(true, 0)
                         }
                     }
                 }
@@ -317,50 +342,92 @@ class ProxyDisconnectTest {
         output.flush()
     }
 
-    private fun writeSseResponseHeaders(output: OutputStream) {
+    private fun writeSseResponseHeaders(
+        output: OutputStream,
+        framing: ResponseFraming,
+        contentLength: Int,
+    ) {
+        val framingHeader = when (framing) {
+            ResponseFraming.CLOSE_DELIMITED -> ""
+            ResponseFraming.CONTENT_LENGTH -> "Content-Length: $contentLength\r\n"
+            ResponseFraming.CHUNKED -> "Transfer-Encoding: chunked\r\n"
+        }
         val headers = "HTTP/1.1 200 OK\r\n" +
                 "Content-Type: text/event-stream\r\n" +
+                framingHeader +
                 "Connection: close\r\n" +
                 "\r\n"
         output.write(headers.encodeToByteArray())
         output.flush()
     }
 
+    private fun writePartialSseBody(
+        output: OutputStream,
+        framing: ResponseFraming,
+        body: ByteArray,
+    ) {
+        if (framing == ResponseFraming.CHUNKED) {
+            output.write(body.size.toString(16).encodeToByteArray())
+            output.write("\r\n".encodeToByteArray())
+            output.write(body)
+            output.write("\r\n".encodeToByteArray())
+        } else {
+            output.write(body)
+        }
+        output.flush()
+    }
+
     @Test
-    fun `convert flow returns 502 for deterministic upstream disconnect points`() = runBlocking {
+    fun `convert flow returns 502 for deterministic upstream disconnect points`() = runTest {
         apiCases.forEach { apiCase ->
             RawUpstreamFailure.entries.forEach { failure ->
-                withFailingRawUpstream(apiCase, failure) { downstreamPort, signals ->
-                    val downstreamResponse = async {
-                        postApiRequest(downstreamPort, apiCase)
-                    }
+                val responseFramings = when (failure) {
+                    RawUpstreamFailure.CloseAfterSseHeaders,
+                    RawUpstreamFailure.CloseAfterPartialSseEvent -> ResponseFraming.entries
 
-                    signals.accepted.await()
-                    when (failure) {
-                        RawUpstreamFailure.CloseAfterAccept -> Unit
-                        RawUpstreamFailure.CloseAfterRequestHeaders -> signals.requestHeadersRead.await()
-                        RawUpstreamFailure.CloseAfterStatusLine -> signals.statusLineWritten.await()
-                        RawUpstreamFailure.CloseAfterSseHeaders -> signals.responseHeadersWritten.await()
-                        RawUpstreamFailure.CloseAfterPartialSseEvent -> signals.partialBodyWritten.await()
-                    }
-                    signals.disconnectRequested.complete(Unit)
-                    signals.disconnected.await()
+                    else -> listOf(ResponseFraming.CLOSE_DELIMITED)
+                }
+                responseFramings.forEach { responseFraming ->
+                    SocketCloseKind.entries.forEach { closeKind ->
+                        withFailingRawUpstream(
+                            apiCase = apiCase,
+                            failure = failure,
+                            closeKind = closeKind,
+                            responseFraming = responseFraming,
+                        ) { downstreamPort, signals ->
+                            val downstreamResponse = async {
+                                postApiRequest(downstreamPort, apiCase)
+                            }
 
-                    val (status, body) = downstreamResponse.await()
-                    assertEquals(HttpStatusCode.BadGateway, status, "${apiCase.name} $failure")
-                    val error = body.getValue("error").jsonObject
-                    assertEquals(
-                        "upstream_error",
-                        error.getValue("type").jsonPrimitive.content,
-                        "${apiCase.name} $failure"
-                    )
+                            signals.accepted.await()
+                            when (failure) {
+                                RawUpstreamFailure.CloseAfterAccept -> Unit
+                                RawUpstreamFailure.CloseAfterRequestHeaders -> signals.requestHeadersRead.await()
+                                RawUpstreamFailure.CloseAfterStatusLine -> signals.statusLineWritten.await()
+                                RawUpstreamFailure.CloseAfterSseHeaders -> signals.responseHeadersWritten.await()
+                                RawUpstreamFailure.CloseAfterPartialSseEvent -> signals.partialBodyWritten.await()
+                            }
+                            signals.disconnectRequested.complete(Unit)
+                            signals.disconnected.await()
+
+                            val caseName = "${apiCase.name} $failure $responseFraming $closeKind"
+                            val (status, body) = downstreamResponse.await()
+                            assertEquals(HttpStatusCode.BadGateway, status, caseName)
+                            val error = body.getValue("error").jsonObject
+                            assertEquals(
+                                "upstream_error",
+                                error.getValue("type").jsonPrimitive.content,
+                                caseName,
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 
     @Test
-    fun `convert flow relays non-SSE upstream error responses`() = runBlocking {
+    fun `convert flow relays non-SSE upstream error responses`() = runTest {
         val upstreamBody = buildJsonObject {
             putJsonObject("error") {
                 put("message", "rate limited")
