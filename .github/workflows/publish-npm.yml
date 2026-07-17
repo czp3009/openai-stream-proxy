@@ -7,13 +7,14 @@ on:
         description: "npm package target to publish"
         required: true
         type: choice
-        default: linuxX64
+        default: all-in-one
         options:
           - linuxX64
           - mingwX64
           - macosArm64
           - main
           - all-platforms
+          - all-in-one
 
 permissions:
   contents: read
@@ -85,7 +86,7 @@ jobs:
 
   linux-x64:
     needs: check
-    if: ${{ (inputs.target == 'linuxX64' || inputs.target == 'all-platforms') && needs.check.outputs.linux_exists == 'false' }}
+    if: ${{ (inputs.target == 'linuxX64' || inputs.target == 'all-platforms' || inputs.target == 'all-in-one') && needs.check.outputs.linux_exists == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -131,7 +132,7 @@ jobs:
 
   windows-x64:
     needs: check
-    if: ${{ (inputs.target == 'mingwX64' || inputs.target == 'all-platforms') && needs.check.outputs.mingw_exists == 'false' }}
+    if: ${{ (inputs.target == 'mingwX64' || inputs.target == 'all-platforms' || inputs.target == 'all-in-one') && needs.check.outputs.mingw_exists == 'false' }}
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -177,7 +178,7 @@ jobs:
 
   macos-arm64:
     needs: check
-    if: ${{ (inputs.target == 'macosArm64' || inputs.target == 'all-platforms') && needs.check.outputs.macos_exists == 'false' }}
+    if: ${{ (inputs.target == 'macosArm64' || inputs.target == 'all-platforms' || inputs.target == 'all-in-one') && needs.check.outputs.macos_exists == 'false' }}
     runs-on: macos-latest
     steps:
       - name: Checkout repository
@@ -223,10 +224,11 @@ jobs:
 
   main:
     needs: check
-    if: ${{ inputs.target == 'main' && needs.check.outputs.main_exists == 'false' }}
+    if: ${{ (inputs.target == 'main' || inputs.target == 'all-in-one') && needs.check.outputs.main_exists == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - name: Verify platform packages exist
+        if: ${{ inputs.target == 'main' }}
         env:
           VERSION: ${{ needs.check.outputs.version }}
           LINUX_EXISTS: ${{ needs.check.outputs.linux_exists }}
